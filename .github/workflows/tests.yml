@@ -1,0 +1,32 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to full commit SHAs; the comment is the release each one is.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Model and fetch script tests
+        run: node --test tests/*.test.mjs
+      - name: Manifest is valid JSON with the required keys
+        run: |
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("manifest.json", "utf8"));
+            for (const k of ["schemaVersion", "id", "name", "version", "kinds", "entryPoints"])
+              if (!(k in m)) { console.error("manifest.json is missing " + k); process.exit(1) }
+            if (m.id.startsWith("omarchy.")) { console.error("omarchy.* ids are reserved"); process.exit(1) }
+          '

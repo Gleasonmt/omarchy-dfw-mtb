@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "id": "gleasonmt.dfw-mtb",
+  "name": "DFW MTB Trail Hub",
+  "version": "0.1.0",
+  "author": "Gleasonmt",
+  "license": "MIT",
+  "description": "Dallas–Fort Worth mountain bike trail status in your bar: your favorite trails at a glance, every trail's conditions a click away, and a notification when one opens or closes. Data from DFW MTB Trail Hub.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "DFW MTB Trail Hub",
+    "description": "Which DFW mountain bike trails are open; click for every trail's status.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "barMode": "favorites",
+      "alerts": "favorites",
+      "sort": "nearest",
+      "unit": "mi",
+      "favorites": []
+    },
+    "schema": [
+      {
+        "key": "barMode",
+        "type": "enum",
+        "label": "Show in bar",
+        "options": [
+          "favorites",
+          "count",
+          "nearest"
+        ],
+        "defaultValue": "favorites",
+        "description": "favorites: how many of your favorite trails are open (all trails until you pick some); count: how many trails are open; nearest: your nearest trail's status."
+      },
+      {
+        "key": "alerts",
+        "type": "enum",
+        "label": "Alerts",
+        "options": [
+          "favorites",
+          "all",
+          "off"
+        ],
+        "defaultValue": "favorites",
+        "description": "A notification when a trail opens, closes or goes to caution: for your favorites, any trail, or none."
+      },
+      {
+        "key": "sort",
+        "type": "enum",
+        "label": "Sort trails",
+        "options": [
+          "nearest",
+          "name",
+          "status"
+        ],
+        "defaultValue": "nearest",
+        "description": "Order of the trail list: nearest your Weather location, by name, or open first."
+      },
+      {
+        "key": "unit",
+        "type": "enum",
+        "label": "Unit",
+        "options": [
+          "mi",
+          "km"
+        ],
+        "defaultValue": "mi"
+      },
+      {
+        "key": "favorites",
+        "type": "multiselect",
+        "label": "Favorite trails",
+        "defaultValue": [],
+        "description": "Your trails. Easiest to set by right-clicking a trail in the panel (or its star); new trails on the site work there too.",
+        "noSelectionText": "No favorites",
+        "placeholderText": "Search trails...",
+        "emptyText": "No trails",
+        "options": [
+          {
+            "value": "arbor-hills",
+            "label": "Arbor Hills",
+            "description": "Plano"
+          },
+          {
+            "value": "barber-hills",
+            "label": "Barber Hills",
+            "description": "Powderly"
+          },
+          {
+            "value": "big-cedar-wilderness",
+            "label": "Big Cedar Wilderness",
+            "description": "Dallas"
+          },
+          {
+            "value": "binkley-bike-park",
+            "label": "Binkley Bike Park",
+            "description": "Sherman"
+          },
+          {
+            "value": "bonham-state-park",
+            "label": "Bonham State Park",
+            "description": "Bonham"
+          },
+          {
+            "value": "boulder-park",
+            "label": "Boulder Park",
+            "description": "Dallas"
+          },
+          {
+            "value": "cameron-park",
+            "label": "Cameron Park",
+            "description": "Waco"
+          },
+          {
+            "value": "cedar-hill-state-park",
+            "label": "Cedar Hill State Park",
+            "description": "Cedar Hill"
+          },
+          {
+            "value": "chisenhall",
+            "label": "Chisenhall",
+            "description": "Burleson"
+          },
+          {
+            "value": "corinth-community-park",
+            "label": "Corinth Community Park",
+            "description": "Corinth"
+          },
+          {
+            "value": "creekside-park",
+            "label": "Creekside Park",
+            "description": "Dallas"
+          },
+          {
+            "value": "cross-timbers-trail",
+            "label": "Cross Timbers Trail",
+            "description": "Lake Texoma"
+          },
+          {
+            "value": "dinosaur-valley-sp",
+            "label": "Dinosaur Valley SP",
+            "description": "Glen Rose"
+          },
+          {
+            "value": "eisenhower-state-park",
+            "label": "Eisenhower State Park",
+            "description": "Denison"
+          },
+          {
+            "value": "erwin-park",
+            "label": "Erwin Park",
+            "description": "McKinney"
+          },
+          {
+            "value": "faulkner-park",
+            "label": "Faulkner Park",
+            "description": "Tyler"
+          },
+          {
+            "value": "fossil-creek-park",
+            "label": "Fossil Creek Park",
+            "description": "North Richland Hills"
+          },
+          {
+            "value": "frisco-nw-community-park",
+            "label": "Frisco NW Community Park",
+            "description": "Frisco"
+          },
+          {
+            "value": "gateway-park",
+            "label": "Gateway Park",
+            "description": "Fort Worth"
+          },
+          {
+            "value": "goat-island-preserve",
+            "label": "Goat Island Preserve",
+            "description": "Hutchins"
+          },
+          {
+            "value": "hachie-mtb",
+            "label": "Hachie MTB",
+            "description": "Waxahachie"
+          },
+          {
+            "value": "harry-moss-park",
+            "label": "Harry Moss Park",
+            "description": "Dallas"
+          },
+          {
+            "value": "horseshoe-trail",
+            "label": "Horseshoe Trail",
+            "description": "Grapevine"
+          },
+          {
+            "value": "isle-du-bois",
+            "label": "Isle du Bois",
+            "description": "Pilot Point"
+          },
+          {
+            "value": "jeff-laquey-trail",
+            "label": "Jeff LaQuey Trail",
+            "description": "Denton"
+          },
+          {
+            "value": "johnson-branch",
+            "label": "Johnson Branch",
+            "description": "Valley View"
+          },
+          {
+            "value": "katie-jackson-park",
+            "label": "Katie Jackson Park",
+            "description": "Dallas"
+          },
+          {
+            "value": "knob-hills-trail",
+            "label": "Knob Hills Trail",
+            "description": "Flower Mound"
+          },
+          {
+            "value": "l-b-houston-nature-trail",
+            "label": "L.B. Houston Nature Trail",
+            "description": "Dallas"
+          },
+          {
+            "value": "lindsey-park",
+            "label": "Lindsey Park",
+            "description": "Tyler"
+          },
+          {
+            "value": "marion-sansom-park",
+            "label": "Marion Sansom Park",
+            "description": "Fort Worth"
+          },
+          {
+            "value": "mineola-nature-preserve",
+            "label": "Mineola Nature Preserve",
+            "description": "Mineola"
+          },
+          {
+            "value": "north-z-boaz-trail",
+            "label": "North Z Boaz Trail",
+            "description": "Fort Worth"
+          },
+          {
+            "value": "northshore-trail",
+            "label": "Northshore Trail",
+            "description": "Flower Mound"
+          },
+          {
+            "value": "oak-cliff-nature-preserve",
+            "label": "Oak Cliff Nature Preserve",
+            "description": "Dallas"
+          },
+          {
+            "value": "parks-of-aledo",
+            "label": "Parks of Aledo",
+            "description": "Aledo"
+          },
+          {
+            "value": "pecan-grove-park",
+            "label": "Pecan Grove Park",
+            "description": "Rowlett"
+          },
+          {
+            "value": "quanah-hill",
+            "label": "Quanah Hill",
+            "description": "Weatherford"
+          },
+          {
+            "value": "river-legacy-trail",
+            "label": "River Legacy Trail",
+            "description": "Arlington"
+          },
+          {
+            "value": "rowlett-creek-preserve",
+            "label": "Rowlett Creek Preserve",
+            "description": "Garland"
+          },
+          {
+            "value": "sister-grove-park",
+            "label": "Sister Grove Park",
+            "description": "Princeton"
+          },
+          {
+            "value": "squabble-creek",
+            "label": "Squabble Creek",
+            "description": "Rockwall"
+          },
+          {
+            "value": "the-woods-at-dunlop-park",
+            "label": "The Woods at Dunlop Park",
+            "description": "Arlington"
+          },
+          {
+            "value": "trinity-track",
+            "label": "Trinity Track",
+            "description": "Willow Park"
+          },
+          {
+            "value": "tyler-state-park",
+            "label": "Tyler State Park",
+            "description": "Tyler"
+          },
+          {
+            "value": "waterloo-lake-regional-park",
+            "label": "Waterloo Lake Regional Park",
+            "description": "Denison"
+          },
+          {
+            "value": "wee-chi-tah-trail",
+            "label": "Wee-Chi-Tah Trail",
+            "description": "Wichita Falls"
+          },
+          {
+            "value": "western-heritage-park",
+            "label": "Western Heritage Park",
+            "description": "Mineral Wells"
+          },
+          {
+            "value": "wildcat-ranch",
+            "label": "Wildcat Ranch",
+            "description": "Crandall"
+          },
+          {
+            "value": "windmill-hill",
+            "label": "Windmill Hill",
+            "description": "DeSoto"
+          }
+        ]
+      }
+    ]
+  }
+}

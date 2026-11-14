@@ -1,0 +1,205 @@
+// Runs Model.js under Node: node --test tests/
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import { readFileSync, existsSync } from "node:fs"
+import vm from "node:vm"
+
+process.env.TZ = "America/Chicago"
+
+const source = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
+  .replace(/^\.pragma library\s*$/m, "")
+const M = {}
+vm.runInNewContext(source, M)
+
+// Objects made inside the vm context have their own prototypes; compare plain copies.
+const plain = x => JSON.parse(JSON.stringify(x))
+
+// Trimmed from the real /api/v1/trails.
+const trail = (slug, name, shown, extra = {}) => ({
+  slug, name, url: `https://dfwmtbtrailhub.com/trails/${slug}`, city: "Plano",
+  latitude: 33, longitude: -96.8,
+  status: { reported: shown, reportedAt: "2026-11-12T14:00:00.000Z", shown, inference: null },
+  condition: { code: "good", label: "Hard-Packed", trailFeel: "Good all day" },
+  reopenEstimate: null, ...extra,
+})
+const arbor = trail("arbor-hills", "Arbor Hills", "open", { latitude: 33.04791, longitude: -96.84754 })
+const northshore = trail("northshore-trail", "Northshore Trail", "open", { latitude: 32.98, longitude: -97.1 })
+const erwin = trail("erwin-park", "Erwin Park", "closed", { latitude: 33.25, longitude: -96.67,
+  condition: { code: "closed", label: "Closed" }, reopenEstimate: { label: "Sat, Nov 15 morning", expectedAt: null, confidence: "low", factors: [] } })
+const goat = trail("goat-island-preserve", "Goat Island Preserve", "caution", { latitude: 32.6, longitude: -96.4,
+  status: { reported: "closed", reportedAt: "2026-10-04T17:00:00.000Z", shown: "caution", inference: { kind: "unconfirmed" } },
+  condition: { code: "unknown", label: "Status Unconfirmed" } })
+const feed = (trails, extra = {}) => JSON.stringify({ apiVersion: "1", generatedAt: "2026-11-14T15:00:00.000Z", trails, ...extra })
+const carrollton = { name: "Carrollton", lat: 32.95373, lon: -96.89028 }
+const now = Date.parse("2026-11-14T15:00:00Z")
+const all = () => M.parseTrails(feed([arbor, northshore, erwin, goat])).trails
+
+test("parseTrails keeps the fields the panel needs", () => {
+  const parsed = M.parseTrails(feed([arbor, erwin, goat]))
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.generatedAt, now)
+  assert.deepEqual(plain(parsed.trails[1]), {
+    slug: "erwin-park", name: "Erwin Park", url: "https://dfwmtbtrailhub.com/trails/erwin-park", city: "Plano",
+    shown: "closed", reported: "closed", reportedAt: Date.parse("2026-11-12T14:00:00.000Z"), unconfirmed: false,
+    condition: "Closed", reopen: "Sat, Nov 15 morning", lat: 33.25, lon: -96.67,
+  })
+  assert.equal(parsed.trails[2].shown, "caution")
+  assert.equal(parsed.trails[2].reported, "closed")
+  assert.equal(parsed.trails[2].unconfirmed, true)
+})
+
+test("parseTrails drops what it can't trust, and survives a changed shape", () => {
+  const bad = [
+    { ...arbor, slug: "../etc" }, { ...arbor, slug: "Arbor Hills" }, { ...arbor, slug: "__proto__" }, { ...arbor, slug: 7 },
+    { ...arbor, name: "" }, { ...arbor, status: { shown: "flooded" } }, { ...arbor, status: null }, null, "x", 42,
+  ]
+  assert.deepEqual(plain(M.parseTrails(feed(bad)).trails), [])
+  for (const raw of ["", "not json", "null", "[]", '{"trails":{}}', '{"trails":"x"}']) {
+    assert.deepEqual(plain(M.parseTrails(raw)), { ok: false, generatedAt: null, trails: [] }, raw)
+  }
+  const parsed = M.parseTrails(feed([{ ...arbor, url: "javascript:alert(1)" }, { ...northshore, url: "https://evil.example/x" },
+    { ...erwin, url: "https://dfwmtbtrailhub.com.evil.example/x" }, { ...goat, url: 'https://dfwmtbtrailhub.com/a"b' }]))
+  assert.deepEqual(plain(parsed.trails.map(t => t.url)), [
+    "https://dfwmtbtrailhub.com/trails/arbor-hills", "https://dfwmtbtrailhub.com/trails/northshore-trail",
+    "https://dfwmtbtrailhub.com/trails/erwin-park", "https://dfwmtbtrailhub.com/trails/goat-island-preserve",
+  ], "links only ever go to the Trail Hub")
+})
+
+test("parseTrails caps every field and the list itself", () => {
+  const huge = "x".repeat(100000)
+  const t = M.parseTrails(feed([{ ...arbor, name: huge, city: huge, condition: { label: huge }, reopenEstimate: { label: huge } }])).trails[0]
+  assert.equal(t.name.length, 200)
+  assert.equal(t.city.length, 80)
+  assert.equal(t.condition.length, 80)
+  assert.equal(t.reopen.length, 80)
+  const many = Array.from({ length: 600 }, (_, i) => ({ ...arbor, slug: "t" + i }))
+  assert.equal(M.parseTrails(feed(many)).trails.length, 500)
+  const html = M.parseTrails(feed([{ ...arbor, name: "<img src=x onerror=alert(1)>" }])).trails[0]
+  assert.equal(html.name, "<img src=x onerror=alert(1)>", "kept as text; the panel shows it as plain text")
+})
+
+test("parseChanges keeps trail changes, newest first", () => {
+  const raw = JSON.stringify({ statusChanges: [
+    { id: "a", at: "2026-11-10T19:07:31.000Z", type: "trail", slug: "gateway-park", name: "Gateway Park",
+      url: "https://dfwmtbtrailhub.com/trails/gateway-park", status: "open", previousStatus: "closed" },
+    { id: "b", at: "2026-11-11T13:59:26.000Z", type: "trail", slug: "cedar-hill-state-park", name: "Cedar Hill State Park",
+      url: "https://evil.example/", status: "open", previousStatus: "closed" },
+    { id: "c", at: "2026-11-11T14:00:00.000Z", type: "skills_park", slug: "x", name: "X", status: "open" },
+    { id: "d", at: "soon", type: "trail", slug: "y", status: "open" },
+    { id: "e", at: "2026-11-11T14:00:00.000Z", type: "trail", slug: "Bad Slug", status: "open" },
+    { id: "f", at: "2026-11-11T14:00:00.000Z", type: "trail", slug: "z", status: "muddy" },
+  ] })
+  const changes = M.parseChanges(raw)
+  assert.deepEqual(plain(changes.map(c => c.id)), ["b", "a"])
+  assert.equal(changes[0].url, "https://dfwmtbtrailhub.com/trails/cedar-hill-state-park", "a foreign link is replaced")
+  assert.equal(changes[1].previous, "closed")
+  assert.deepEqual(plain(M.parseChanges("nope")), [])
+})
+
+test("favorites: parsed leniently, toggled, never anything but slugs", () => {
+  assert.deepEqual(plain(M.parseFavorites(["arbor-hills", "arbor-hills", "Bad", 3, null, "erwin-park"])), ["arbor-hills", "erwin-park"])
+  assert.deepEqual(plain(M.parseFavorites("arbor-hills, erwin-park")), ["arbor-hills", "erwin-park"], "a hand-edited string works")
+  assert.deepEqual(plain(M.parseFavorites({ a: 1 })), [])
+  assert.deepEqual(plain(M.toggleFavorite(["arbor-hills"], "erwin-park")), ["arbor-hills", "erwin-park"])
+  assert.deepEqual(plain(M.toggleFavorite(["arbor-hills", "erwin-park"], "arbor-hills")), ["erwin-park"])
+  assert.deepEqual(plain(M.toggleFavorite([], "../x")), [])
+  assert.equal(M.parseFavorites(Array.from({ length: 300 }, (_, i) => "t" + i)).length, 100)
+})
+
+test("arrange: nearest first from your location, by name without one, or open first", () => {
+  const near = M.arrange(all(), carrollton, "mi", ["erwin-park"], "nearest")
+  assert.deepEqual(plain(near.map(t => t.slug)), ["arbor-hills", "northshore-trail", "erwin-park", "goat-island-preserve"])
+  assert.ok(Math.abs(near[0].distance - 6.96) < 0.05, "Arbor Hills is about 7 miles from Carrollton")
+  assert.equal(near.find(t => t.slug === "erwin-park").favorite, true)
+  assert.deepEqual(plain(M.arrange(all(), null, "mi", [], "nearest").map(t => t.slug)),
+    ["arbor-hills", "erwin-park", "goat-island-preserve", "northshore-trail"], "no location: by name")
+  assert.deepEqual(plain(M.arrange(all(), carrollton, "mi", [], "status").map(t => t.shown)), ["open", "open", "caution", "closed"])
+  assert.deepEqual(plain(M.arrange(all(), carrollton, "mi", [], "name").map(t => t.slug)),
+    ["arbor-hills", "erwin-park", "goat-island-preserve", "northshore-trail"])
+  const km = M.arrange(all(), carrollton, "km", [], "nearest")
+  assert.ok(Math.abs(km.find(t => t.slug === "arbor-hills").distance - 11.21) < 0.05)
+})
+
+test("the bar: favorites, the overall count, or the nearest trail, with fallbacks", () => {
+  const favs = M.arrange(all(), carrollton, "mi", ["arbor-hills", "erwin-park"], "nearest")
+  assert.equal(M.barLabel("favorites", favs), "1/2 open")
+  assert.equal(M.barAlert("favorites", favs), true, "a favorite is closed")
+  assert.equal(M.barLabel("count", favs), "2 open")
+  assert.equal(M.barAlert("count", favs), false)
+  assert.equal(M.barLabel("nearest", favs), "Arbor Hills · open")
+  assert.equal(M.barAlert("nearest", favs), false)
+  const none = M.arrange(all(), carrollton, "mi", [], "nearest")
+  assert.equal(M.barLabel("favorites", none), "2 open", "no favorites yet: the overall count")
+  assert.equal(M.barAlert("favorites", none), false)
+  const lost = M.arrange(all(), null, "mi", [], "name")
+  assert.equal(M.barLabel("nearest", lost), "2 open", "no location: the overall count")
+  assert.equal(M.barLabel("favorites", []), "", "nothing loaded yet")
+  const long = M.arrange(M.parseTrails(feed([trail("long", "Waterloo Lake Regional Park", "open")])).trails, carrollton, "mi", [], "nearest")
+  assert.equal(M.barLabel("nearest", long), "Waterloo Lake Reg… · open")
+})
+
+test("when a status was reported is always shown", () => {
+  assert.equal(M.ago(now - 30000, now), "just now")
+  assert.equal(M.ago(now - 25 * 60000, now), "25 min ago")
+  assert.equal(M.ago(now - 3 * 3600000, now), "3 hr ago")
+  assert.equal(M.ago(now - 86400000, now), "1 day ago")
+  assert.equal(M.ago(now - 9 * 86400000, now), "9 days ago")
+  assert.equal(M.ago(Date.parse("2026-10-04T17:00:00Z"), now), "Oct 4")
+  assert.equal(M.ago(null, now), "date unknown")
+  const t = M.arrange(all(), carrollton, "mi", [], "nearest")
+  assert.equal(M.caption(t.find(x => x.slug === "arbor-hills"), "mi", now), "7 mi · Open · Hard-Packed · reported 2 days ago")
+  assert.equal(M.caption(t.find(x => x.slug === "erwin-park"), "mi", now), "24 mi · Closed · reopens Sat, Nov 15 morning · reported 2 days ago")
+  assert.equal(M.caption(t.find(x => x.slug === "goat-island-preserve"), "mi", now), "38 mi · Caution (unconfirmed) · Status Unconfirmed · reported Oct 4")
+  assert.equal(M.caption(M.arrange(all(), null, "mi", [], "name")[0], "mi", now), "Open · Hard-Packed · reported 2 days ago", "no distance without a location")
+})
+
+const change = (id, slug, at, status = "closed", previous = "open") =>
+  ({ id, slug, name: slug, url: `https://dfwmtbtrailhub.com/trails/${slug}`, at: Date.parse(at), status, previous })
+
+test("alerts: only new changes, for favorites or any trail, oldest first", () => {
+  const changes = [change("1", "arbor-hills", "2026-11-14T14:00:00Z"), change("2", "erwin-park", "2026-11-14T13:00:00Z"),
+    change("3", "arbor-hills", "2026-11-13T10:00:00Z")]
+  const since = Date.parse("2026-11-14T09:00:00Z")
+  assert.deepEqual(plain(M.alertsDue(changes, "favorites", ["arbor-hills"], since).map(c => c.id)), ["1"])
+  assert.deepEqual(plain(M.alertsDue(changes, "all", [], since).map(c => c.id)), ["2", "1"])
+  assert.deepEqual(plain(M.alertsDue(changes, "off", ["arbor-hills"], since)), [])
+  assert.deepEqual(plain(M.alertsDue(changes, "favorites", [], since)), [], "no favorites: nothing")
+  assert.deepEqual(plain(M.alertsDue(changes, "bogus", ["arbor-hills"], since)), [])
+})
+
+test("alert text: public trail data, and no markup can survive", () => {
+  const c = { ...change("1", "x", "2026-11-14T19:30:00Z"), name: '<b>Tom & Jerry</b> &lt;i&gt;' }
+  const t = M.alertText(c)
+  assert.equal(t.headline, "‹b›Tom ＆ Jerry‹/b› ＆lt;i＆gt; is closed")
+  assert.equal(t.body, "Was open · reported 1:30 PM\nDFW MTB Trail Hub")
+  assert.doesNotMatch(t.headline + t.body, /[<>&]/)
+  assert.equal(M.alertText({ ...c, name: "A", status: "caution", previous: "" }).headline, "A is on caution")
+  assert.equal(M.alertText({ ...c, name: "A", status: "open", previous: "" }).body, "reported 1:30 PM\nDFW MTB Trail Hub")
+})
+
+// Measured, not modelled: run alert text through Omarchy's own notification
+// markup (when Omarchy is installed; CI has no Omarchy, so it is skipped).
+const markupDir = "/usr/share/omarchy/shell/plugins/notifications"
+test("Omarchy's notification markup draws alert text as plain text", { skip: !existsSync(markupDir + "/Markup.js") }, () => {
+  const load = name => readFileSync(`${markupDir}/${name}`, "utf8").replace(/^\.pragma library\s*$/m, "").replace(/^\.import .*$/mg, "")
+  const ctx = { Security: {} }
+  vm.runInNewContext(load("Security.js"), ctx.Security)
+  vm.runInNewContext(load("Markup.js"), ctx)
+  const t = M.alertText({ ...change("1", "x", "2026-11-14T19:30:00Z"),
+    name: '<b>Bold</b> &lt;i&gt;x&lt;/i&gt; <a href="https://example.com/">Click</a> &amp;amp;' })
+  for (const text of [t.headline, t.body]) {
+    assert.doesNotMatch(ctx.render(text), /<(b|i|s|u|em|strong|a)\b/i, ctx.render(text))
+  }
+  assert.match(ctx.render("&lt;b&gt;x&lt;/b&gt;"), /<b>/, "the service does decode escaped markup")
+})
+
+test("settings rows cycle through their choices both ways", () => {
+  assert.equal(M.cycle("favorites", ["favorites", "count", "nearest"], 1), "count")
+  assert.equal(M.cycle("nearest", ["favorites", "count", "nearest"], 1), "favorites")
+  assert.equal(M.cycle("favorites", ["favorites", "count", "nearest"], -1), "nearest")
+  assert.equal(M.cycle("junk", ["favorites", "count", "nearest"], 1), "favorites")
+})
+
+test("file URLs encode every path segment", () => {
+  assert.equal(M.fileUrl("/home/q#1%?/x"), "file:///home/q%231%25%3F/x")
+})
