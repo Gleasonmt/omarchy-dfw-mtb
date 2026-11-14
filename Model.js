@@ -16,6 +16,8 @@ var MAX_TRAILS = 500
 var MAX_CHANGES = 200
 
 var STATUSES = ["open", "caution", "closed"]
+var CONDITIONS = ["epic", "good", "fair", "poor", "closed", "unknown"]
+var LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"]
 
 function text(value, max) {
   return String(value === undefined || value === null ? "" : value).slice(0, max).trim()
@@ -73,6 +75,8 @@ function parseTrails(raw) {
     var inference = s.inference && typeof s.inference === "object" ? s.inference : null
     var lat = coordinate(t.latitude, 90)
     var lon = coordinate(t.longitude, 180)
+    var d = t.difficulty && typeof t.difficulty === "object" ? t.difficulty : {}
+    var org = t.organization && typeof t.organization === "object" ? t.organization : {}
     trails.push({
       slug: id,
       name: name,
@@ -83,12 +87,89 @@ function parseTrails(raw) {
       reportedAt: time(s.reportedAt),
       unconfirmed: !!inference,
       condition: text(c.label, MAX_SHORT),
+      conditionCode: CONDITIONS.indexOf(c.code) >= 0 ? c.code : "unknown",
+      trailFeel: text(c.trailFeel, MAX_SHORT),
+      easiest: level(d.easiest) || level(d.rating),
+      hardest: level(d.hardest) || level(d.rating),
+      org: text(org.name, MAX_SHORT),
       reopen: text(reopen.label, MAX_SHORT),
       lat: lat === null || lon === null ? null : lat,
       lon: lat === null || lon === null ? null : lon
     })
   }
   return { ok: true, generatedAt: time(data.generatedAt), trails: trails }
+}
+
+function level(value) {
+  return LEVELS.indexOf(value) >= 0 ? value : ""
+}
+
+// /api/v1/trails/<slug>, for a favorite's tile: today's hour-by-hour dirt
+// ({hour, condition, forecast}) and the day in words. null if unusable.
+function parseDetail(raw) {
+  var data
+  try {
+    data = JSON.parse(String(raw || ""))
+  } catch (e) {
+    return null
+  }
+  var t = data && typeof data === "object" ? (data.trail && typeof data.trail === "object" ? data.trail : data) : null
+  if (!t || !slug(t.slug)) return null
+  var list = Array.isArray(t.hourlyToday) ? t.hourlyToday : []
+  var hourly = []
+  for (var i = 0; i < list.length && hourly.length < 24; i++) {
+    var h = list[i]
+    if (!h || typeof h !== "object") continue
+    var hour = Number(h.hour)
+    if (!(hour >= 0 && hour <= 23 && Math.floor(hour) === hour)) continue
+    hourly.push({ hour: hour, condition: CONDITIONS.indexOf(h.condition) >= 0 ? h.condition : "unknown", forecast: h.forecast === true })
+  }
+  var c = t.condition && typeof t.condition === "object" ? t.condition : {}
+  return { slug: t.slug, hourly: hourly, trailFeel: text(c.trailFeel, MAX_SHORT) }
+}
+
+// DFW MTB Trail Hub's condition colors (its site.css), so a trail looks the
+// same here as on the site: purple epic, green good, amber fair, red poor or
+// closed. The dark set is for its tiles, which keep the site's dark card; the
+// light set for rows on a light Omarchy theme, where the bright greens would
+// wash out.
+var TONES_DARK = { epic: "#a855f7", good: "#22ee88", fair: "#ffbb33", poor: "#ff4466", closed: "#ff4466", unknown: "#9aa3b5" }
+var TONES_LIGHT = { epic: "#9333ea", good: "#16a34a", fair: "#d97706", poor: "#e11d48", closed: "#e11d48", unknown: "#555e72" }
+
+function tone(code, light) {
+  var set = light ? TONES_LIGHT : TONES_DARK
+  return set[code] || set.unknown
+}
+
+// A trail's status as a condition color: open good, caution fair, closed.
+function statusTone(shown, light) {
+  return tone(shown === "open" ? "good" : shown === "caution" ? "fair" : "closed", light)
+}
+
+// "6a", "12p", "5p"
+function hourLabel(hour) {
+  return (hour % 12 === 0 ? 12 : hour % 12) + (hour < 12 ? "a" : "p")
+}
+
+// The site's difficulty symbols: ● beginner, ■ intermediate, ◆ advanced,
+// ◆◆ expert. "Beginner–Advanced" when a trail spans levels.
+function levelGlyph(value) {
+  return value === "Beginner" ? "\u25cf" : value === "Intermediate" ? "\u25a0" : value === "Advanced" ? "\u25c6" : value === "Expert" ? "\u25c6\u25c6" : ""
+}
+
+function difficultyLabel(t) {
+  if (!t.easiest) return ""
+  return t.easiest === t.hardest || !t.hardest ? t.easiest : t.easiest + "\u2013" + t.hardest
+}
+
+// The footer's "report 27d ago", as the site writes it.
+function reportAge(ms, now) {
+  if (ms === null || ms === undefined) return "report date unknown"
+  var minutes = Math.max(0, Math.floor((now - ms) / 60000))
+  if (minutes < 60) return minutes < 2 ? "reported just now" : "report " + minutes + "m ago"
+  var hours = Math.floor(minutes / 60)
+  if (hours < 24) return "report " + hours + "h ago"
+  return "report " + Math.floor(hours / 24) + "d ago"
 }
 
 // /api/v1/status-changes: trail changes only (skills parks aren't listed).
