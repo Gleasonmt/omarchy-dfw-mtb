@@ -26,7 +26,7 @@ printf '%s' "$STUB_BODY" > "$out"
   const log = join(root, "curl-args")
   const run = (env = {}, age = "0", bytes = "2000000", url = "https://example.org/trails.json", name = "trails.json") =>
     spawnSync("bash", ["-c", `umask 022; exec bash "$0" "$@"`, script, dir, name, url, age, bytes], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB_LOG: log, STUB_BODY: '{"events":[]}', ...env },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB_LOG: log, STUB_BODY: '{"trails":[]}', ...env },
       encoding: "utf8",
     })
   return { root, bin, dir, log, run, file: join(dir, "trails.json") }
@@ -35,7 +35,7 @@ printf '%s' "$STUB_BODY" > "$out"
 test("downloads into place, private under umask 022", () => {
   const s = sandbox()
   assert.equal(s.run().status, 0)
-  assert.equal(readFileSync(s.file, "utf8"), '{"events":[]}')
+  assert.equal(readFileSync(s.file, "utf8"), '{"trails":[]}')
   assert.equal(statSync(s.file).mode & 0o777, 0o600)
   assert.equal(statSync(s.dir).mode & 0o777, 0o700, "a new cache folder is private too")
   assert.deepEqual(readdirSync(s.dir).filter(f => f.startsWith(".dl.")), [], "no temporary file left")
@@ -47,6 +47,7 @@ test("passes the byte cap, https-only and a deadline to curl", () => {
   const args = readFileSync(s.log, "utf8").split("\n")
   assert.equal(args[args.indexOf("--max-filesize") + 1], "4096")
   assert.equal(args[args.indexOf("--proto") + 1], "=https")
+  assert.equal(args[args.indexOf("--proto-redir") + 1], "=https", "a redirect can't leave https either")
   assert.ok(args.includes("--max-time"))
 })
 

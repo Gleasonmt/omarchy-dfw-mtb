@@ -5,6 +5,8 @@ bar shows how many of them are open ("2/3 open"); click it for every trail's sta
 the status was reported and how far away each trail is, and get a notification when one of your
 trails opens or closes.
 
+Made by the person who runs DFW MTB Trail Hub, the site whose data it shows.
+
 ![The bar reading "4/4 open"](media/bar.png)
 
 Trail data comes from [DFW MTB Trail Hub](https://dfwmtbtrailhub.com), which follows 50 trail
@@ -35,7 +37,7 @@ omarchy plugin add https://github.com/Gleasonmt/omarchy-dfw-mtb --enable
 |---|---|
 | Your favorites (default) | `2/3 open`, or every trail's count until you star some |
 | How many trails are open | `43 open` |
-| Your nearest trail | `Arbor Hills · open` |
+| Your nearest trail | `Arbor Hills · open · 2d ago` (with when it was reported) |
 
 **Your favorites** are drawn like the trail tiles on dfwmtbtrailhub.com: the trailhead sign with
 an OPEN, CAUTION or CLOSED badge, the dirt in the site's colors (purple epic, green good, amber fair,
@@ -54,8 +56,10 @@ reported. Below them are the latest status changes and a link to the site.
 
 **Alerts**: when one of your favorites opens, closes or goes to caution, you get one notification
 (one, however many monitors you have); click it for the trail's page. Under Filter options you can
-switch alerts to any trail, or off. Installing the widget or restarting the shell doesn't replay
-old changes.
+switch alerts to any trail, or off. Only changes that appear while the widget is running are
+announced: installing it, restarting the shell, starring a trail or switching alerts on never
+replays earlier ones. At most three come at once; the rest are one "N more trail changes"
+notification.
 
 ## How it works
 
@@ -85,8 +89,9 @@ change in the panel. It makes three kinds of request, all plain HTTPS GETs:
 - `geo.omarchy.org`, only when no Weather location is set at all, at most once a day (capped at
   4 KB)
 
-The answers are read as JSON, every field is cut to a length the panel can show, links are only
-ever followed to dfwmtbtrailhub.com, and nothing downloaded is ever run. A trail's name has `<`,
+The answers are read as JSON and every field is cut to a length the panel can show. Downloads are
+HTTPS only, redirects included. The links you can click only ever go to dfwmtbtrailhub.com, and
+nothing downloaded is ever run. A trail's name has `<`,
 `>` and `&` swapped for look-alike characters before it goes into a notification, so nothing in it
 can format the notification or add a link of its own. Cached files and alert records are readable
 only by you. Alerts carry only public trail data, never your location.
@@ -132,7 +137,9 @@ node --test tests/*.test.mjs
 
 ## Credit and license
 
-Trail data: [DFW MTB Trail Hub](https://dfwmtbtrailhub.com). Weather data by Open-Meteo.com. Trail
-lengths and drive times: © OpenStreetMap contributors, ODbL.
+Trail data: [DFW MTB Trail Hub](https://dfwmtbtrailhub.com), by the plugin's author. Weather data by
+Open-Meteo.com. Trail lengths and drive times: © OpenStreetMap contributors, ODbL.
+
+[REVIEWING.md](REVIEWING.md) has the threat model, where each boundary is enforced, and its tests.
 
 The plugin is MIT licensed.

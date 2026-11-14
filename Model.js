@@ -19,8 +19,17 @@ var STATUSES = ["open", "caution", "closed"]
 var CONDITIONS = ["epic", "good", "fair", "poor", "closed", "unknown"]
 var LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"]
 
+// Cut at `max` UTF-16 units, never between the halves of an emoji (a lone
+// surrogate would draw as a box).
 function text(value, max) {
-  return String(value === undefined || value === null ? "" : value).slice(0, max).trim()
+  var s = String(value === undefined || value === null ? "" : value)
+  if (s.length > max) {
+    var end = max
+    var c = s.charCodeAt(end - 1)
+    if (c >= 0xd800 && c <= 0xdbff) end--
+    s = s.slice(0, end)
+  }
+  return s.trim()
 }
 
 function coordinate(value, limit) {
@@ -160,6 +169,16 @@ function levelGlyph(value) {
 function difficultyLabel(t) {
   if (!t.easiest) return ""
   return t.easiest === t.hardest || !t.hardest ? t.easiest : t.easiest + "\u2013" + t.hardest
+}
+
+// "40m ago", "5h ago", "2d ago": a report's age, short, for the bar.
+function shortAge(ms, now) {
+  if (ms === null || ms === undefined) return "date unknown"
+  var minutes = Math.max(0, Math.floor((now - ms) / 60000))
+  if (minutes < 2) return "just now"
+  if (minutes < 60) return minutes + "m ago"
+  var hours = Math.floor(minutes / 60)
+  return hours < 24 ? hours + "h ago" : Math.floor(hours / 24) + "d ago"
 }
 
 // The footer's "report 27d ago", as the site writes it.
@@ -310,14 +329,16 @@ function shortName(name, max) {
   return n.length <= max ? n : n.slice(0, max - 1).trim() + "…"
 }
 
+// The site asks that a status always comes with when it was reported, so
+// "nearest" carries its age: "Arbor Hills · open · 2d ago".
 // What the bar says, for mode "favorites" (falls back to the count with no
 // favorites), "count", or "nearest" (falls back to the count without a
 // location). Never a clock time.
-function barLabel(mode, arranged) {
+function barLabel(mode, arranged, now) {
   if (!arranged.length) return ""
   if (mode === "nearest") {
     var n = nearest(arranged)
-    if (n) return shortName(n.name, 18) + " · " + n.shown
+    if (n) return shortName(n.name, 18) + " · " + n.shown + " · " + shortAge(n.reportedAt, now)
   }
   if (mode === "favorites" || mode === "nearest") {
     var favs = favoritesOf(arranged)
@@ -377,21 +398,52 @@ function caption(t, unit, now) {
   return parts.join(" · ")
 }
 
-// Status changes worth a notification: newer than `since` (so installing the
-// widget, or waking the laptop, doesn't replay a backlog), for any trail with
-// alerts "all", or for favorites with "favorites". Oldest first.
-function alertsDue(changes, mode, favorites, since) {
+// A status change dated this far ahead of the clock isn't believed: one from
+// the future would never age out.
+var FUTURE_SLACK_MS = 10 * 60 * 1000
+
+// At most this many notifications per update; the rest are one summary, so a
+// feed full of changes (or a compromised one) can't flood the desktop.
+var MAX_ALERTS = 3
+
+// Status changes worth a notification: ones not in `seen` (the changes already
+// listed when the widget started, or when alerts or favorites last changed, so
+// installing it, restarting the shell or starring a trail never replays old
+// ones), not dated in the future, for any trail with alerts "all" or for
+// favorites with "favorites". Oldest first.
+function alertsDue(changes, mode, favorites, seen, now) {
   if (mode !== "all" && mode !== "favorites") return []
   var favs = parseFavorites(favorites)
   var out = []
   for (var i = 0; i < changes.length; i++) {
     var c = changes[i]
-    if (c.at <= since) continue
+    if (seen && seen[c.id]) continue
+    if (c.at > now + FUTURE_SLACK_MS) continue
     if (mode === "favorites" && favs.indexOf(c.slug) < 0) continue
     out.push(c)
   }
   out.sort(function(a, b) { return a.at - b.at })
   return out
+}
+
+// The changes listed now, as a `seen` set for alertsDue.
+function seenSet(changes) {
+  var seen = {}
+  for (var i = 0; i < changes.length; i++) seen[changes[i].id] = true
+  return seen
+}
+
+// alertsDue's list split into the ones notified one by one and how many more
+// go into a single summary.
+function alertBatch(due) {
+  return { each: due.slice(0, MAX_ALERTS), more: Math.max(0, due.length - MAX_ALERTS) }
+}
+
+function summaryText(more) {
+  return {
+    headline: more + " more trail " + (more === 1 ? "change" : "changes"),
+    body: "See them on DFW MTB Trail Hub"
+  }
 }
 
 // A notification body is markup to Omarchy's notification service, which

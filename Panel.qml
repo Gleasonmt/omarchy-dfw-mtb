@@ -50,16 +50,11 @@ Panel {
     : detectedLocation
 
   property double now: Date.now()
-  // Status changes older than this aren't notified, so a fresh install or a
-  // shell restart doesn't replay a backlog. Six hours back, because a change
-  // is dated when the club posted it, which can be a while before the site
-  // reads it. Each change is notified at most once anyway (notify.sh).
-  readonly property double alertsSince: Date.now() - 6 * 3600 * 1000
 
   readonly property var trails: Model.arrange(feed.trails, origin, unit, favorites, sortMode)
   readonly property var favoriteTrails: Model.favoritesOf(trails)
   readonly property int openCount: Model.countOpen(trails)
-  readonly property string barLabel: Model.barLabel(barMode, trails)
+  readonly property string barLabel: Model.barLabel(barMode, trails, now)
   readonly property bool barAlert: Model.barAlert(barMode, trails)
   readonly property var recentChanges: changes.slice(0, 3)
 
@@ -179,6 +174,19 @@ Panel {
     onExited: function(code) {
       if (code !== 2) root.fetchFailed = code !== 0
       trailsFile.reload()
+      // Another bar holds the download. Its result normally arrives through
+      // the file watch, but on a first run the folder didn't exist when the
+      // watch was set up, so read again once it's likely done.
+      if (code === 2) busyRetry.restart()
+    }
+  }
+
+  Timer {
+    id: busyRetry
+    interval: 20 * 1000
+    onTriggered: {
+      trailsFile.reload()
+      changesFile.reload()
     }
   }
 
@@ -246,6 +254,10 @@ Panel {
   // tile watches its own file.
   readonly property string detailDir: cacheDir + "/detail"
   property var detailQueue: []
+  // Each finished download bumps this and every tile reads its file again: a
+  // tile's watch can't see a file whose folder didn't exist when the tile was
+  // made (a fresh install), so the hourly bar stayed empty until a restart.
+  property int detailRevision: 0
 
   function fetchDetails() {
     var queue = detailQueue.slice()
@@ -266,46 +278,75 @@ Panel {
   Process {
     id: detailProc
     onExited: {
+      root.detailRevision++
       root.detailQueue = root.detailQueue.slice(1)
       if (root.detailQueue.length > 0) root.nextDetail()
-      else detailPrune.running = true
+      else root.pruneDetails()
     }
   }
 
   // Details of trails no longer a favorite: removed after 30 days unused.
+  // A current favorite's is kept however old (a month offline). The names are
+  // slugs (Model.slug), safe as find patterns.
+  function pruneDetails() {
+    if (detailPrune.running) return
+    var command = ["find", detailDir, "-type", "f", "-mtime", "+30"]
+    for (var i = 0; i < favorites.length; i++) command.push("!", "-name", favorites[i] + ".json")
+    detailPrune.command = command.concat(["-delete"])
+    detailPrune.running = true
+  }
+
   Process {
     id: detailPrune
-    command: ["find", root.detailDir, "-type", "f", "-mtime", "+30", "-delete"]
   }
 
 
   // ---- Alerts ---------------------------------------------------------------
 
-  // notify.sh records each change it announces, under a lock, so one status
-  // change gives one notification however many monitors have a bar.
-  // sentHere only saves asking it again on every refresh.
-  property var sentHere: ({})
+  // Only changes that appear while the widget runs are announced: the ones
+  // listed when it first reads the list, and when alerts or favorites change,
+  // are `seen` (so installing it, restarting the shell or starring a trail
+  // never replays old changes). notify.sh also records each change it
+  // announces, under a lock, so one change gives one notification however
+  // many monitors have a bar. At most Model.MAX_ALERTS each update, then one
+  // summary for the rest.
+  property var seen: null
+
+  function markSeen() {
+    var next = Model.seenSet(changes)
+    // Changes the feed no longer lists needn't be remembered
+    if (seen && Object.keys(seen).length < 1000) for (var id in seen) next[id] = true
+    seen = next
+  }
+
+  function notify(key, glyph, text, url) {
+    // The click opens the page on the Trail Hub; the link is one argument,
+    // never parsed by a shell.
+    Quickshell.execDetached(["bash", notifyScript, stateDir, key,
+      "--app-name", "DFW MTB Trail Hub", "-g", glyph, "-u", "normal",
+      text.headline, text.body, "--exec", "omarchy-launch-browser", url])
+  }
 
   function checkAlerts() {
-    var due = Model.alertsDue(changes, alerts, favorites, alertsSince)
-    for (var i = 0; i < due.length; i++) {
-      var c = due[i]
-      var key = Qt.md5("change|" + c.id)
-      if (sentHere[key]) continue
-      sentHere[key] = true
-      var t = Model.alertText(c)
-      // Clicking it opens the trail's page on the Trail Hub; the link is one
-      // argument, never parsed by a shell.
-      Quickshell.execDetached(["bash", notifyScript, stateDir, key,
-        "--app-name", "DFW MTB Trail Hub", "-g", root.statusGlyph(c.status), "-u", "normal",
-        t.headline, t.body, "--exec", "omarchy-launch-browser", c.url])
+    if (seen === null) {
+      if (changes.length) markSeen()
+      return
     }
+    var batch = Model.alertBatch(Model.alertsDue(changes, alerts, favorites, seen, Date.now()))
+    for (var i = 0; i < batch.each.length; i++) {
+      var c = batch.each[i]
+      notify(Qt.md5("change|" + c.id), root.statusGlyph(c.status), Model.alertText(c), c.url)
+    }
+    if (batch.more > 0)
+      notify(Qt.md5("summary|" + changes.map(function(c) { return c.id }).join(",")), "\u{f00a3}",
+        Model.summaryText(batch.more), "https://dfwmtbtrailhub.com/")
+    markSeen()
   }
 
   onChangesChanged: checkAlerts()
-  onAlertsChanged: checkAlerts()
+  onAlertsChanged: if (seen !== null) markSeen()
   onFavoritesChanged: {
-    checkAlerts()
+    if (seen !== null) markSeen()
     fetchDetails()
   }
 
@@ -334,7 +375,7 @@ Panel {
   Component.onCompleted: {
     refresh(false)
     fetchDetails()
-    detailPrune.running = true
+    pruneDetails()
   }
 
   // ---- Bar ------------------------------------------------------------------
@@ -632,8 +673,8 @@ Panel {
                 ? "Distances from " + (root.origin.name || "you") + (root.usingWeatherLocation ? " (your weather location)" : " (from your network)")
                 : (root.usingWeatherLocation ? "Your Weather location has no coordinates; pick it from the Weather panel's search for distances." : "Location unknown; set one in the Weather panel for distances.")
               var when = root.fetchFailed && !root.feed.ok ? "Couldn't reach dfwmtbtrailhub.com. Middle-click to retry."
-                : root.feed.generatedAt ? "Trail data from DFW MTB Trail Hub, updated " + Model.ago(root.feed.generatedAt, root.now)
-                : "Trail data from DFW MTB Trail Hub"
+                : root.feed.generatedAt ? "Trail data from DFW MTB Trail Hub, updated " + Model.ago(root.feed.generatedAt, root.now) + ". Weather by Open-Meteo.com"
+                : "Trail data from DFW MTB Trail Hub. Weather by Open-Meteo.com"
               return where + "\n" + when + ". A closure posted at the trailhead overrides this."
             }
           }
@@ -680,7 +721,13 @@ Panel {
 
     implicitHeight: card.implicitHeight
 
+    Connections {
+      target: root
+      function onDetailRevisionChanged() { detailFile.reload() }
+    }
+
     FileView {
+      id: detailFile
       path: tile.trail ? root.detailDir + "/" + tile.trail.slug + ".json" : ""
       watchChanges: true
       printErrors: false
