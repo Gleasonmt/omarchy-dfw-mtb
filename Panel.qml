@@ -314,6 +314,15 @@ Panel {
     onTriggered: root.detailRevision++
   }
 
+  // While the panel is open the tiles read their files every 30 s, for a
+  // second monitor whose bar didn't download them (small local reads)
+  Timer {
+    interval: 30 * 1000
+    running: root.opened
+    repeat: true
+    onTriggered: root.detailRevision++
+  }
+
 
   // ---- Alerts ---------------------------------------------------------------
 

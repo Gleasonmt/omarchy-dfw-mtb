@@ -220,6 +220,8 @@ function parseChanges(raw) {
       previous: status(c.previousStatus)
     })
   }
+  // A list with entries but none usable is as unreadable as broken JSON
+  if (list.length > 0 && out.length === 0) return null
   out.sort(function(a, b) { return b.at - a.at })
   return out
 }
@@ -419,7 +421,7 @@ function alertsDue(changes, mode, favorites, seen, now) {
   var out = []
   for (var i = 0; i < changes.length; i++) {
     var c = changes[i]
-    if (seen && seen[c.id] === true) continue
+    if (seen && seen.ids[c.id] !== undefined) continue
     if (c.at > now + FUTURE_SLACK_MS) continue
     if (mode === "favorites" && favs.indexOf(c.slug) < 0) continue
     out.push(c)
@@ -432,20 +434,33 @@ function alertsDue(changes, mode, favorites, seen, now) {
 // the feed, so the set has no prototype: an id like "__proto__" made a plain
 // {} throw (alerts stopped on every bar), and "constructor" or "toString"
 // read as already seen.
+//
+// { ids, n }: each id with the order it was first seen in, so the set only
+// ever grows, and past MAX_SEEN forgets its oldest ids, never the ones a
+// short or empty list happened to leave out.
+var MAX_SEEN = 1000
+
 function seenSet(changes) {
-  var seen = Object.create(null)
-  for (var i = 0; i < changes.length; i++) seen[changes[i].id] = true
-  return seen
+  return mergeSeen(null, changes)
 }
 
-// `seen` with the changes listed now added. Ids the feed no longer lists are
-// forgotten once it holds 1000, so it can't grow without end.
+// `seen` with the changes listed now added (a new set; `seen` is unchanged).
 function mergeSeen(seen, changes) {
-  // An empty list adds nothing; never let it clear what was seen
-  if (seen && changes.length === 0) return seen
-  var next = seenSet(changes)
-  if (seen && Object.keys(seen).length < 1000) for (var id in seen) next[id] = true
-  return next
+  var ids = Object.create(null)
+  var n = 0
+  if (seen) {
+    for (var id in seen.ids) ids[id] = seen.ids[id]
+    n = seen.n
+  }
+  for (var i = 0; i < changes.length; i++) {
+    if (ids[changes[i].id] === undefined) ids[changes[i].id] = ++n
+  }
+  var keys = Object.keys(ids)
+  if (keys.length > MAX_SEEN) {
+    keys.sort(function(a, b) { return ids[a] - ids[b] })
+    for (var k = 0; k < keys.length - MAX_SEEN; k++) delete ids[keys[k]]
+  }
+  return { ids: ids, n: n }
 }
 
 // One alerts update, as the panel runs it each time the change list is read:
@@ -456,6 +471,8 @@ function mergeSeen(seen, changes) {
 // posted while the shell was off are in a later download, so they're
 // announced then, with their date (alertText).
 function alertStep(seen, changes, mode, favorites, now) {
+  // No usable list (parseChanges' null) changes nothing
+  if (!changes) return { seen: seen, each: [], more: 0 }
   if (seen === null) return { seen: seenSet(changes), each: [], more: 0 }
   var batch = alertBatch(alertsDue(changes, mode, favorites, seen, now))
   return { seen: mergeSeen(seen, changes), each: batch.each, more: batch.more }
@@ -464,7 +481,7 @@ function alertStep(seen, changes, mode, favorites, now) {
 // When favorites or the alerts setting change, everything listed now counts
 // as seen: starring a trail or switching alerts on never replays its past.
 function alertsReset(seen, changes) {
-  return seen === null ? null : mergeSeen(seen, changes)
+  return seen === null || !changes ? seen : mergeSeen(seen, changes)
 }
 
 // alertsDue's list split into the ones notified one by one and how many more

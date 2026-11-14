@@ -174,9 +174,9 @@ test("alerts: only changes not seen yet, for favorites or any trail, oldest firs
 test("alerts: a change dated in the future isn't believed, and a flood is three alerts and one summary", () => {
   const ahead = change("f", "arbor-hills", "2026-11-15T15:00:00Z")
   const soon = change("s", "arbor-hills", new Date(now + 5 * 60000).toISOString())
-  assert.deepEqual(plain(M.alertsDue([ahead, soon], "all", [], {}, now).map(c => c.id)), ["s"], "minutes of clock skew are fine")
+  assert.deepEqual(plain(M.alertsDue([ahead, soon], "all", [], M.seenSet([]), now).map(c => c.id)), ["s"], "minutes of clock skew are fine")
   const flood = Array.from({ length: 200 }, (_, i) => change("c" + i, "arbor-hills", new Date(now - i * 60000).toISOString()))
-  const batch = M.alertBatch(M.alertsDue(flood, "all", [], {}, now))
+  const batch = M.alertBatch(M.alertsDue(flood, "all", [], M.seenSet([]), now))
   assert.equal(batch.each.length, 3)
   assert.deepEqual(plain(batch.each.map(c => c.id)), ["c199", "c198", "c197"], "oldest first")
   assert.equal(batch.more, 197)
@@ -309,7 +309,7 @@ test("change ids from the feed can't break or hide alerts (__proto__, constructo
   const step = M.alertStep(first.seen, hostile, "all", [], now)
   assert.equal(step.each.length + step.more, 5, "every one is announced, none read as seen")
   assert.equal(M.alertStep(step.seen, hostile, "all", [], now).each.length, 0, "and each only once")
-  assert.equal(Object.getPrototypeOf(M.seenSet(hostile)), null)
+  assert.equal(Object.getPrototypeOf(M.seenSet(hostile).ids), null)
 })
 
 test("an alert says the day when the change wasn't today", () => {
@@ -319,9 +319,24 @@ test("an alert says the day when the change wasn't today", () => {
   assert.equal(at("2026-11-11T18:55:00Z"), "Was open · reported Nov 11, 12:55 PM")
 })
 
-test("an empty read never clears what was seen, even once the set is full", () => {
-  const many = Array.from({ length: 1200 }, (_, i) => change("c" + i, "arbor-hills", new Date(now - i * 60000).toISOString()))
-  const seen = M.seenSet(many)
-  assert.equal(M.mergeSeen(seen, []), seen)
-  assert.equal(M.alertStep(M.alertStep(seen, [], "all", [], now).seen, many, "all", [], now).each.length, 0)
+test("what was seen is never cleared by a short, empty or unusable list; past 1000 the oldest go", () => {
+  const list = (from, count) => Array.from({ length: count }, (_, i) => change("c" + (from + i), "arbor-hills", new Date(now - (from + i) * 60000).toISOString()))
+  const recent = list(0, 200)
+  let seen = M.alertStep(null, recent, "all", [], now).seen
+  for (const read of [[], recent.slice(0, 1), null]) seen = M.alertStep(seen, read, "all", [], now).seen
+  assert.equal(M.alertStep(seen, recent, "all", [], now).each.length, 0, "the full list again announces nothing")
+  // A long session: 1200 ids seen, the oldest 200 forgotten, the current list still remembered
+  let long = M.alertStep(null, [], "all", [], now).seen
+  for (let from = 1000; from >= 0; from -= 200) long = M.mergeSeen(long, list(from, 200))
+  assert.equal(Object.keys(long.ids).length, 1000)
+  assert.equal(long.ids.c1100, undefined, "the oldest are forgotten")
+  assert.equal(M.alertStep(long, recent, "all", [], now).each.length, 0)
+  // An unusable first read is no read
+  assert.equal(M.alertStep(null, null, "all", [], now).seen, null)
+  assert.equal(M.alertsReset(seen, null), seen)
+})
+
+test("a change list whose entries are all unusable counts as unreadable", () => {
+  assert.equal(M.parseChanges('{"statusChanges":[{"type":"trail","id":"x"}]}'), null)
+  assert.equal(M.parseChanges('{"statusChanges":[{"type":"skills_park","id":"x","at":"2026-11-14T00:00:00Z","slug":"a","status":"open"}]}'), null)
 })
