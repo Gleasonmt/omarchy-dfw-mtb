@@ -219,7 +219,9 @@ Panel {
     printErrors: false
     onFileChanged: reload()
     onLoaded: {
-      root.changes = Model.parseChanges(text())
+      var parsed = Model.parseChanges(text())
+      if (parsed === null) return
+      root.changes = parsed
       root.changesRead = true
       root.checkAlerts()
     }
@@ -390,6 +392,9 @@ Panel {
     weatherFile.reload()
     refresh(false)
     fetchDetails()
+    // Tiles read their files again: on a second monitor the other bar may have
+    // downloaded them since (a fresh install's watch can't see them)
+    detailRevision++
     cursorActive = false
     rowIndex = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })

@@ -94,7 +94,8 @@ test("parseChanges keeps trail changes, newest first", () => {
   assert.deepEqual(plain(changes.map(c => c.id)), ["b", "a"])
   assert.equal(changes[0].url, "https://dfwmtbtrailhub.com/trails/cedar-hill-state-park", "a foreign link is replaced")
   assert.equal(changes[1].previous, "closed")
-  assert.deepEqual(plain(M.parseChanges("nope")), [])
+  for (const raw of ["nope", "", "null", "[]", '{"statusChanges":{}}']) assert.equal(M.parseChanges(raw), null, raw)
+  assert.deepEqual(plain(M.parseChanges('{"statusChanges":[]}')), [], "an empty list is a list")
 })
 
 test("favorites: parsed leniently, toggled, never anything but slugs", () => {
@@ -316,4 +317,11 @@ test("an alert says the day when the change wasn't today", () => {
   assert.equal(at("2026-11-14T13:55:00Z"), "Was open · reported 7:55 AM")
   assert.equal(at("2026-11-13T18:55:00Z"), "Was open · reported yesterday 12:55 PM")
   assert.equal(at("2026-11-11T18:55:00Z"), "Was open · reported Nov 11, 12:55 PM")
+})
+
+test("an empty read never clears what was seen, even once the set is full", () => {
+  const many = Array.from({ length: 1200 }, (_, i) => change("c" + i, "arbor-hills", new Date(now - i * 60000).toISOString()))
+  const seen = M.seenSet(many)
+  assert.equal(M.mergeSeen(seen, []), seen)
+  assert.equal(M.alertStep(M.alertStep(seen, [], "all", [], now).seen, many, "all", [], now).each.length, 0)
 })

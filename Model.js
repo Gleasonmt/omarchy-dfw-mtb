@@ -192,14 +192,17 @@ function reportAge(ms, now) {
 }
 
 // /api/v1/status-changes: trail changes only (skills parks aren't listed).
+// null when the list can't be read at all, so the panel never takes an
+// unreadable file for the first read (and then announces every old change).
 function parseChanges(raw) {
   var data
   try {
     data = JSON.parse(String(raw || ""))
   } catch (e) {
-    return []
+    return null
   }
-  var list = data && Array.isArray(data.statusChanges) ? data.statusChanges : []
+  if (!data || !Array.isArray(data.statusChanges)) return null
+  var list = data.statusChanges
   var out = []
   for (var i = 0; i < list.length && out.length < MAX_CHANGES; i++) {
     var c = list[i]
@@ -406,10 +409,9 @@ var FUTURE_SLACK_MS = 10 * 60 * 1000
 // feed full of changes (or a compromised one) can't flood the desktop.
 var MAX_ALERTS = 3
 
-// Status changes worth a notification: ones not in `seen` (the changes already
-// listed when the widget started, or when alerts or favorites last changed, so
-// installing it, restarting the shell or starring a trail never replays old
-// ones), not dated in the future, for any trail with alerts "all" or for
+// Status changes worth a notification: ones not in `seen` (the changes listed
+// at the first read, or when alerts or favorites last changed: see
+// alertStep), not dated in the future, for any trail with alerts "all" or for
 // favorites with "favorites". Oldest first.
 function alertsDue(changes, mode, favorites, seen, now) {
   if (mode !== "all" && mode !== "favorites") return []
@@ -439,6 +441,8 @@ function seenSet(changes) {
 // `seen` with the changes listed now added. Ids the feed no longer lists are
 // forgotten once it holds 1000, so it can't grow without end.
 function mergeSeen(seen, changes) {
+  // An empty list adds nothing; never let it clear what was seen
+  if (seen && changes.length === 0) return seen
   var next = seenSet(changes)
   if (seen && Object.keys(seen).length < 1000) for (var id in seen) next[id] = true
   return next
