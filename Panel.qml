@@ -748,8 +748,13 @@ Panel {
       watchChanges: true
       printErrors: false
       onFileChanged: reload()
+      // The 30 s re-reads while the panel is open parse only what changed
+      property string lastText: ""
       onLoaded: {
-        var d = Model.parseDetail(text())
+        var raw = text()
+        if (raw === lastText) return
+        lastText = raw
+        var d = Model.parseDetail(raw)
         tile.detail = d && tile.trail && d.slug === tile.trail.slug ? d : null
       }
     }

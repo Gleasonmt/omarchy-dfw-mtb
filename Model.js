@@ -204,9 +204,11 @@ function parseChanges(raw) {
   if (!data || !Array.isArray(data.statusChanges)) return null
   var list = data.statusChanges
   var out = []
+  var trailEntries = 0
   for (var i = 0; i < list.length && out.length < MAX_CHANGES; i++) {
     var c = list[i]
     if (!c || typeof c !== "object" || c.type !== "trail") continue
+    trailEntries++
     var id = text(c.id, MAX_SHORT)
     var at = time(c.at)
     var s = slug(c.slug)
@@ -220,8 +222,9 @@ function parseChanges(raw) {
       previous: status(c.previousStatus)
     })
   }
-  // A list with entries but none usable is as unreadable as broken JSON
-  if (list.length > 0 && out.length === 0) return null
+  // Trail entries but none usable is as unreadable as broken JSON; a list of
+  // skills parks only is just a list with no trail changes
+  if (trailEntries > 0 && out.length === 0) return null
   out.sort(function(a, b) { return b.at - a.at })
   return out
 }

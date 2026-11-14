@@ -336,7 +336,14 @@ test("what was seen is never cleared by a short, empty or unusable list; past 10
   assert.equal(M.alertsReset(seen, null), seen)
 })
 
-test("a change list whose entries are all unusable counts as unreadable", () => {
+test("a change list whose trail entries are all unusable counts as unreadable; skills parks alone are just no changes", () => {
   assert.equal(M.parseChanges('{"statusChanges":[{"type":"trail","id":"x"}]}'), null)
-  assert.equal(M.parseChanges('{"statusChanges":[{"type":"skills_park","id":"x","at":"2026-11-14T00:00:00Z","slug":"a","status":"open"}]}'), null)
+  assert.deepEqual(plain(M.parseChanges('{"statusChanges":[{"type":"skills_park","id":"x","at":"2026-11-14T00:00:00Z","slug":"a","status":"open"}]}')), [])
+})
+
+test("an id seen again keeps its first-seen place, so the oldest really are forgotten first", () => {
+  const a = change("a", "arbor-hills", "2026-11-14T13:00:00Z")
+  const b = change("b", "arbor-hills", "2026-11-14T13:10:00Z")
+  const seen = M.mergeSeen(M.seenSet([a]), [b, a])
+  assert.deepEqual([seen.ids.a, seen.ids.b, seen.n], [1, 2, 2])
 })
