@@ -19,8 +19,17 @@ var STATUSES = ["open", "caution", "closed"]
 var CONDITIONS = ["epic", "good", "fair", "poor", "closed", "unknown"]
 var LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"]
 
+// Cut at `max` UTF-16 units, never between the halves of an emoji (a lone
+// surrogate would draw as a box).
 function text(value, max) {
-  return String(value === undefined || value === null ? "" : value).slice(0, max).trim()
+  var s = String(value === undefined || value === null ? "" : value)
+  if (s.length > max) {
+    var end = max
+    var c = s.charCodeAt(end - 1)
+    if (c >= 0xd800 && c <= 0xdbff) end--
+    s = s.slice(0, end)
+  }
+  return s.trim()
 }
 
 function coordinate(value, limit) {
@@ -162,6 +171,16 @@ function difficultyLabel(t) {
   return t.easiest === t.hardest || !t.hardest ? t.easiest : t.easiest + "\u2013" + t.hardest
 }
 
+// "40m ago", "5h ago", "2d ago": a report's age, short, for the bar.
+function shortAge(ms, now) {
+  if (ms === null || ms === undefined) return "date unknown"
+  var minutes = Math.max(0, Math.floor((now - ms) / 60000))
+  if (minutes < 2) return "just now"
+  if (minutes < 60) return minutes + "m ago"
+  var hours = Math.floor(minutes / 60)
+  return hours < 24 ? hours + "h ago" : Math.floor(hours / 24) + "d ago"
+}
+
 // The footer's "report 27d ago", as the site writes it.
 function reportAge(ms, now) {
   if (ms === null || ms === undefined) return "report date unknown"
@@ -173,18 +192,23 @@ function reportAge(ms, now) {
 }
 
 // /api/v1/status-changes: trail changes only (skills parks aren't listed).
+// null when the list can't be read at all, so the panel never takes an
+// unreadable file for the first read (and then announces every old change).
 function parseChanges(raw) {
   var data
   try {
     data = JSON.parse(String(raw || ""))
   } catch (e) {
-    return []
+    return null
   }
-  var list = data && Array.isArray(data.statusChanges) ? data.statusChanges : []
+  if (!data || !Array.isArray(data.statusChanges)) return null
+  var list = data.statusChanges
   var out = []
+  var trailEntries = 0
   for (var i = 0; i < list.length && out.length < MAX_CHANGES; i++) {
     var c = list[i]
     if (!c || typeof c !== "object" || c.type !== "trail") continue
+    trailEntries++
     var id = text(c.id, MAX_SHORT)
     var at = time(c.at)
     var s = slug(c.slug)
@@ -198,6 +222,9 @@ function parseChanges(raw) {
       previous: status(c.previousStatus)
     })
   }
+  // Trail entries but none usable is as unreadable as broken JSON; a list of
+  // skills parks only is just a list with no trail changes
+  if (trailEntries > 0 && out.length === 0) return null
   out.sort(function(a, b) { return b.at - a.at })
   return out
 }
@@ -310,14 +337,16 @@ function shortName(name, max) {
   return n.length <= max ? n : n.slice(0, max - 1).trim() + "…"
 }
 
+// The site asks that a status always comes with when it was reported, so
+// "nearest" carries its age: "Arbor Hills · open · 2d ago".
 // What the bar says, for mode "favorites" (falls back to the count with no
 // favorites), "count", or "nearest" (falls back to the count without a
 // location). Never a clock time.
-function barLabel(mode, arranged) {
+function barLabel(mode, arranged, now) {
   if (!arranged.length) return ""
   if (mode === "nearest") {
     var n = nearest(arranged)
-    if (n) return shortName(n.name, 18) + " · " + n.shown
+    if (n) return shortName(n.name, 18) + " · " + n.shown + " · " + shortAge(n.reportedAt, now)
   }
   if (mode === "favorites" || mode === "nearest") {
     var favs = favoritesOf(arranged)
@@ -377,21 +406,98 @@ function caption(t, unit, now) {
   return parts.join(" · ")
 }
 
-// Status changes worth a notification: newer than `since` (so installing the
-// widget, or waking the laptop, doesn't replay a backlog), for any trail with
-// alerts "all", or for favorites with "favorites". Oldest first.
-function alertsDue(changes, mode, favorites, since) {
+// A status change dated this far ahead of the clock isn't believed: one from
+// the future would never age out.
+var FUTURE_SLACK_MS = 10 * 60 * 1000
+
+// At most this many notifications per update; the rest are one summary, so a
+// feed full of changes (or a compromised one) can't flood the desktop.
+var MAX_ALERTS = 3
+
+// Status changes worth a notification: ones not in `seen` (the changes listed
+// at the first read, or when alerts or favorites last changed: see
+// alertStep), not dated in the future, for any trail with alerts "all" or for
+// favorites with "favorites". Oldest first.
+function alertsDue(changes, mode, favorites, seen, now) {
   if (mode !== "all" && mode !== "favorites") return []
   var favs = parseFavorites(favorites)
   var out = []
   for (var i = 0; i < changes.length; i++) {
     var c = changes[i]
-    if (c.at <= since) continue
+    if (seen && seen.ids[c.id] !== undefined) continue
+    if (c.at > now + FUTURE_SLACK_MS) continue
     if (mode === "favorites" && favs.indexOf(c.slug) < 0) continue
     out.push(c)
   }
   out.sort(function(a, b) { return a.at - b.at })
   return out
+}
+
+// The changes listed now, as a `seen` set for alertsDue. The ids come from
+// the feed, so the set has no prototype: an id like "__proto__" made a plain
+// {} throw (alerts stopped on every bar), and "constructor" or "toString"
+// read as already seen.
+//
+// { ids, n }: each id with the order it was first seen in, so the set only
+// ever grows, and past MAX_SEEN forgets its oldest ids, never the ones a
+// short or empty list happened to leave out.
+var MAX_SEEN = 1000
+
+function seenSet(changes) {
+  return mergeSeen(null, changes)
+}
+
+// `seen` with the changes listed now added (a new set; `seen` is unchanged).
+function mergeSeen(seen, changes) {
+  var ids = Object.create(null)
+  var n = 0
+  if (seen) {
+    for (var id in seen.ids) ids[id] = seen.ids[id]
+    n = seen.n
+  }
+  for (var i = 0; i < changes.length; i++) {
+    if (ids[changes[i].id] === undefined) ids[changes[i].id] = ++n
+  }
+  var keys = Object.keys(ids)
+  if (keys.length > MAX_SEEN) {
+    keys.sort(function(a, b) { return ids[a] - ids[b] })
+    for (var k = 0; k < keys.length - MAX_SEEN; k++) delete ids[keys[k]]
+  }
+  return { ids: ids, n: n }
+}
+
+// One alerts update, as the panel runs it each time the change list is read:
+// { seen, each, more }. The first read (`seen` null) only records what's
+// listed, so installing the widget never announces old changes; a read of an
+// empty list counts as one. After that, the changes not seen yet are due:
+// at most MAX_ALERTS one by one (`each`), and `more` in one summary. Changes
+// posted while the shell was off are in a later download, so they're
+// announced then, with their date (alertText).
+function alertStep(seen, changes, mode, favorites, now) {
+  // No usable list (parseChanges' null) changes nothing
+  if (!changes) return { seen: seen, each: [], more: 0 }
+  if (seen === null) return { seen: seenSet(changes), each: [], more: 0 }
+  var batch = alertBatch(alertsDue(changes, mode, favorites, seen, now))
+  return { seen: mergeSeen(seen, changes), each: batch.each, more: batch.more }
+}
+
+// When favorites or the alerts setting change, everything listed now counts
+// as seen: starring a trail or switching alerts on never replays its past.
+function alertsReset(seen, changes) {
+  return seen === null || !changes ? seen : mergeSeen(seen, changes)
+}
+
+// alertsDue's list split into the ones notified one by one and how many more
+// go into a single summary.
+function alertBatch(due) {
+  return { each: due.slice(0, MAX_ALERTS), more: Math.max(0, due.length - MAX_ALERTS) }
+}
+
+function summaryText(more) {
+  return {
+    headline: more + " more trail " + (more === 1 ? "change" : "changes"),
+    body: "See them on DFW MTB Trail Hub"
+  }
 }
 
 // A notification body is markup to Omarchy's notification service, which
@@ -408,12 +514,24 @@ function clock(ms) {
   return (h % 12 === 0 ? 12 : h % 12) + (m ? ":" + (m < 10 ? "0" : "") + m : "") + (h < 12 ? " AM" : " PM")
 }
 
+// When a change was reported, for its notification: "12:55 PM" today,
+// "yesterday 12:55 PM", else "Nov 12, 12:55 PM", so one announced after the
+// laptop was off doesn't read as today's.
+function reportedWhen(ms, now) {
+  var day = function(t) { var d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() }
+  var days = Math.round((day(now) - day(ms)) / 86400000)
+  if (days === 0) return clock(ms)
+  if (days === 1) return "yesterday " + clock(ms)
+  var d = new Date(ms)
+  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + clock(ms)
+}
+
 // Headline and body for a status change. Public trail data only.
-function alertText(change) {
+function alertText(change, now) {
   var word = change.status === "open" ? "open" : change.status === "closed" ? "closed" : "on caution"
   return {
     headline: plainText(change.name) + " is " + word,
-    body: plainText((change.previous ? "Was " + change.previous + " · " : "") + "reported " + clock(change.at)) + "\nDFW MTB Trail Hub"
+    body: plainText((change.previous ? "Was " + change.previous + " · " : "") + "reported " + reportedWhen(change.at, now)) + "\nDFW MTB Trail Hub"
   }
 }
 

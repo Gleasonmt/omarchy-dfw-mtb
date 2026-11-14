@@ -94,7 +94,8 @@ test("parseChanges keeps trail changes, newest first", () => {
   assert.deepEqual(plain(changes.map(c => c.id)), ["b", "a"])
   assert.equal(changes[0].url, "https://dfwmtbtrailhub.com/trails/cedar-hill-state-park", "a foreign link is replaced")
   assert.equal(changes[1].previous, "closed")
-  assert.deepEqual(plain(M.parseChanges("nope")), [])
+  for (const raw of ["nope", "", "null", "[]", '{"statusChanges":{}}']) assert.equal(M.parseChanges(raw), null, raw)
+  assert.deepEqual(plain(M.parseChanges('{"statusChanges":[]}')), [], "an empty list is a list")
 })
 
 test("favorites: parsed leniently, toggled, never anything but slugs", () => {
@@ -123,20 +124,20 @@ test("arrange: nearest first from your location, by name without one, or open fi
 
 test("the bar: favorites, the overall count, or the nearest trail, with fallbacks", () => {
   const favs = M.arrange(all(), carrollton, "mi", ["arbor-hills", "erwin-park"], "nearest")
-  assert.equal(M.barLabel("favorites", favs), "1/2 open")
+  assert.equal(M.barLabel("favorites", favs, now), "1/2 open")
   assert.equal(M.barAlert("favorites", favs), true, "a favorite is closed")
-  assert.equal(M.barLabel("count", favs), "2 open")
+  assert.equal(M.barLabel("count", favs, now), "2 open")
   assert.equal(M.barAlert("count", favs), false)
-  assert.equal(M.barLabel("nearest", favs), "Arbor Hills · open")
+  assert.equal(M.barLabel("nearest", favs, now), "Arbor Hills · open · 2d ago", "the site asks for the report's age with a status")
   assert.equal(M.barAlert("nearest", favs), false)
   const none = M.arrange(all(), carrollton, "mi", [], "nearest")
-  assert.equal(M.barLabel("favorites", none), "2 open", "no favorites yet: the overall count")
+  assert.equal(M.barLabel("favorites", none, now), "2 open", "no favorites yet: the overall count")
   assert.equal(M.barAlert("favorites", none), false)
   const lost = M.arrange(all(), null, "mi", [], "name")
-  assert.equal(M.barLabel("nearest", lost), "2 open", "no location: the overall count")
-  assert.equal(M.barLabel("favorites", []), "", "nothing loaded yet")
+  assert.equal(M.barLabel("nearest", lost, now), "2 open", "no location: the overall count")
+  assert.equal(M.barLabel("favorites", [], now), "", "nothing loaded yet")
   const long = M.arrange(M.parseTrails(feed([trail("long", "Waterloo Lake Regional Park", "open")])).trails, carrollton, "mi", [], "nearest")
-  assert.equal(M.barLabel("nearest", long), "Waterloo Lake Reg… · open")
+  assert.equal(M.barLabel("nearest", long, now), "Waterloo Lake Reg… · open · 2d ago")
 })
 
 test("when a status was reported is always shown", () => {
@@ -157,25 +158,50 @@ test("when a status was reported is always shown", () => {
 const change = (id, slug, at, status = "closed", previous = "open") =>
   ({ id, slug, name: slug, url: `https://dfwmtbtrailhub.com/trails/${slug}`, at: Date.parse(at), status, previous })
 
-test("alerts: only new changes, for favorites or any trail, oldest first", () => {
-  const changes = [change("1", "arbor-hills", "2026-11-14T14:00:00Z"), change("2", "erwin-park", "2026-11-14T13:00:00Z"),
-    change("3", "arbor-hills", "2026-11-13T10:00:00Z")]
-  const since = Date.parse("2026-11-14T09:00:00Z")
-  assert.deepEqual(plain(M.alertsDue(changes, "favorites", ["arbor-hills"], since).map(c => c.id)), ["1"])
-  assert.deepEqual(plain(M.alertsDue(changes, "all", [], since).map(c => c.id)), ["2", "1"])
-  assert.deepEqual(plain(M.alertsDue(changes, "off", ["arbor-hills"], since)), [])
-  assert.deepEqual(plain(M.alertsDue(changes, "favorites", [], since)), [], "no favorites: nothing")
-  assert.deepEqual(plain(M.alertsDue(changes, "bogus", ["arbor-hills"], since)), [])
+test("alerts: only changes not seen yet, for favorites or any trail, oldest first", () => {
+  const old = [change("3", "arbor-hills", "2026-11-13T10:00:00Z")]
+  const seen = M.seenSet(old)
+  const changes = [change("1", "arbor-hills", "2026-11-14T14:00:00Z"), change("2", "erwin-park", "2026-11-14T13:00:00Z"), ...old]
+  assert.deepEqual(plain(M.alertsDue(changes, "favorites", ["arbor-hills"], seen, now).map(c => c.id)), ["1"])
+  assert.deepEqual(plain(M.alertsDue(changes, "all", [], seen, now).map(c => c.id)), ["2", "1"])
+  assert.deepEqual(plain(M.alertsDue(changes, "off", ["arbor-hills"], seen, now)), [])
+  assert.deepEqual(plain(M.alertsDue(changes, "favorites", [], seen, now)), [], "no favorites: nothing")
+  assert.deepEqual(plain(M.alertsDue(changes, "bogus", ["arbor-hills"], seen, now)), [])
+  // Starring a trail marks its past changes seen: nothing replays (the panel calls seenSet again)
+  assert.deepEqual(plain(M.alertsDue(changes, "all", [], M.seenSet(changes), now)), [])
+})
+
+test("alerts: a change dated in the future isn't believed, and a flood is three alerts and one summary", () => {
+  const ahead = change("f", "arbor-hills", "2026-11-15T15:00:00Z")
+  const soon = change("s", "arbor-hills", new Date(now + 5 * 60000).toISOString())
+  assert.deepEqual(plain(M.alertsDue([ahead, soon], "all", [], M.seenSet([]), now).map(c => c.id)), ["s"], "minutes of clock skew are fine")
+  const flood = Array.from({ length: 200 }, (_, i) => change("c" + i, "arbor-hills", new Date(now - i * 60000).toISOString()))
+  const batch = M.alertBatch(M.alertsDue(flood, "all", [], M.seenSet([]), now))
+  assert.equal(batch.each.length, 3)
+  assert.deepEqual(plain(batch.each.map(c => c.id)), ["c199", "c198", "c197"], "oldest first")
+  assert.equal(batch.more, 197)
+  assert.deepEqual(plain(M.summaryText(197)), { headline: "197 more trail changes", body: "See them on DFW MTB Trail Hub" })
+  assert.equal(M.summaryText(1).headline, "1 more trail change")
+  assert.deepEqual(plain(M.alertBatch([])), { each: [], more: 0 })
+})
+
+test("text cuts never split an emoji", () => {
+  const bike = "\u{1F6B5}"
+  const name = "x".repeat(199) + bike
+  const t = M.parseTrails(feed([{ ...arbor, name }])).trails[0]
+  assert.equal(t.name, "x".repeat(199), "the half emoji is dropped, not kept as a lone surrogate")
+  assert.doesNotMatch(t.name, /[\ud800-\udfff]/)
+  assert.equal(M.parseTrails(feed([{ ...arbor, name: "x".repeat(198) + bike }])).trails[0].name.length, 200, "a whole one fits")
 })
 
 test("alert text: public trail data, and no markup can survive", () => {
   const c = { ...change("1", "x", "2026-11-14T19:30:00Z"), name: '<b>Tom & Jerry</b> &lt;i&gt;' }
-  const t = M.alertText(c)
+  const t = M.alertText(c, now)
   assert.equal(t.headline, "‹b›Tom ＆ Jerry‹/b› ＆lt;i＆gt; is closed")
   assert.equal(t.body, "Was open · reported 1:30 PM\nDFW MTB Trail Hub")
   assert.doesNotMatch(t.headline + t.body, /[<>&]/)
-  assert.equal(M.alertText({ ...c, name: "A", status: "caution", previous: "" }).headline, "A is on caution")
-  assert.equal(M.alertText({ ...c, name: "A", status: "open", previous: "" }).body, "reported 1:30 PM\nDFW MTB Trail Hub")
+  assert.equal(M.alertText({ ...c, name: "A", status: "caution", previous: "" }, now).headline, "A is on caution")
+  assert.equal(M.alertText({ ...c, name: "A", status: "open", previous: "" }, now).body, "reported 1:30 PM\nDFW MTB Trail Hub")
 })
 
 // Measured, not modelled: run alert text through Omarchy's own notification
@@ -252,4 +278,72 @@ test("report age reads like the site's tiles", () => {
   assert.equal(M.reportAge(now - 5 * 3600000, now), "report 5h ago")
   assert.equal(M.reportAge(now - 27 * 86400000, now), "report 27d ago")
   assert.equal(M.reportAge(null, now), "report date unknown")
+})
+
+test("the alerts' lifecycle: the first read only records, new changes are announced once, starring replays nothing", () => {
+  const a = change("a", "arbor-hills", "2026-11-14T13:00:00Z")
+  const b = change("b", "erwin-park", "2026-11-14T14:00:00Z")
+  const c = change("c", "arbor-hills", "2026-11-14T14:30:00Z")
+  // First read (install, shell start): nothing announced
+  let step = M.alertStep(null, [a, b], "all", [], now)
+  assert.deepEqual([step.each.length, step.more], [0, 0])
+  // A later read with a new change: announced, then never again
+  step = M.alertStep(step.seen, [c, a, b], "all", [], now)
+  assert.deepEqual(plain(step.each.map(x => x.id)), ["c"])
+  step = M.alertStep(step.seen, [c, a, b], "all", [], now)
+  assert.equal(step.each.length, 0)
+  // An empty first read is a read: the next list's changes are new
+  const empty = M.alertStep(null, [], "all", [], now)
+  assert.deepEqual(plain(M.alertStep(empty.seen, [a], "all", [], now).each.map(x => x.id)), ["a"])
+  // Starring a trail (or switching alerts on) counts everything listed as seen
+  const before = M.alertStep(null, [], "favorites", [], now).seen
+  const starred = M.alertsReset(before, [a, c])
+  assert.deepEqual(plain(M.alertStep(starred, [a, c], "favorites", ["arbor-hills"], now).each), [])
+  assert.equal(M.alertsReset(null, [a]), null, "before the first read there's nothing to reset")
+})
+
+test("change ids from the feed can't break or hide alerts (__proto__, constructor, toString)", () => {
+  const hostile = ["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"].map((id, i) =>
+    change(id, "arbor-hills", new Date(now - i * 60000).toISOString()))
+  const first = M.alertStep(null, [], "all", [], now)
+  const step = M.alertStep(first.seen, hostile, "all", [], now)
+  assert.equal(step.each.length + step.more, 5, "every one is announced, none read as seen")
+  assert.equal(M.alertStep(step.seen, hostile, "all", [], now).each.length, 0, "and each only once")
+  assert.equal(Object.getPrototypeOf(M.seenSet(hostile).ids), null)
+})
+
+test("an alert says the day when the change wasn't today", () => {
+  const at = (iso) => M.alertText(change("1", "x", iso), now).body.split("\n")[0]
+  assert.equal(at("2026-11-14T13:55:00Z"), "Was open · reported 7:55 AM")
+  assert.equal(at("2026-11-13T18:55:00Z"), "Was open · reported yesterday 12:55 PM")
+  assert.equal(at("2026-11-11T18:55:00Z"), "Was open · reported Nov 11, 12:55 PM")
+})
+
+test("what was seen is never cleared by a short, empty or unusable list; past 1000 the oldest go", () => {
+  const list = (from, count) => Array.from({ length: count }, (_, i) => change("c" + (from + i), "arbor-hills", new Date(now - (from + i) * 60000).toISOString()))
+  const recent = list(0, 200)
+  let seen = M.alertStep(null, recent, "all", [], now).seen
+  for (const read of [[], recent.slice(0, 1), null]) seen = M.alertStep(seen, read, "all", [], now).seen
+  assert.equal(M.alertStep(seen, recent, "all", [], now).each.length, 0, "the full list again announces nothing")
+  // A long session: 1200 ids seen, the oldest 200 forgotten, the current list still remembered
+  let long = M.alertStep(null, [], "all", [], now).seen
+  for (let from = 1000; from >= 0; from -= 200) long = M.mergeSeen(long, list(from, 200))
+  assert.equal(Object.keys(long.ids).length, 1000)
+  assert.equal(long.ids.c1100, undefined, "the oldest are forgotten")
+  assert.equal(M.alertStep(long, recent, "all", [], now).each.length, 0)
+  // An unusable first read is no read
+  assert.equal(M.alertStep(null, null, "all", [], now).seen, null)
+  assert.equal(M.alertsReset(seen, null), seen)
+})
+
+test("a change list whose trail entries are all unusable counts as unreadable; skills parks alone are just no changes", () => {
+  assert.equal(M.parseChanges('{"statusChanges":[{"type":"trail","id":"x"}]}'), null)
+  assert.deepEqual(plain(M.parseChanges('{"statusChanges":[{"type":"skills_park","id":"x","at":"2026-11-14T00:00:00Z","slug":"a","status":"open"}]}')), [])
+})
+
+test("an id seen again keeps its first-seen place, so the oldest really are forgotten first", () => {
+  const a = change("a", "arbor-hills", "2026-11-14T13:00:00Z")
+  const b = change("b", "arbor-hills", "2026-11-14T13:10:00Z")
+  const seen = M.mergeSeen(M.seenSet([a]), [b, a])
+  assert.deepEqual([seen.ids.a, seen.ids.b, seen.n], [1, 2, 2])
 })

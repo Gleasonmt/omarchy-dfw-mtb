@@ -8,6 +8,7 @@
 # - The download goes to a private temporary file first and is renamed into
 #   place only when complete, so a reader never sees half a file and a failed
 #   download keeps the old copy.
+# - HTTPS only, redirects included (--proto, --proto-redir).
 # - Files are created 0600 (mktemp) whatever the umask.
 # - One download at a time per file: every monitor's bar runs this, and the
 #   ones that find that file's lock taken leave it to the one holding it.
@@ -35,7 +36,7 @@ if [ "$age" -gt 0 ] && [ -n "$(find "$file" -mmin -"$age" 2>/dev/null)" ]; then
 fi
 
 tmp=$(mktemp "$dir/.dl.XXXXXX") || exit 1
-if curl -fsSL --proto '=https' --max-time 15 --max-filesize "$max_bytes" "$url" -o "$tmp"; then
+if curl -fsSL --proto '=https' --proto-redir '=https' --max-time 15 --max-filesize "$max_bytes" "$url" -o "$tmp"; then
   mv -f "$tmp" "$file"
 else
   rm -f "$tmp"
