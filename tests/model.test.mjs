@@ -41,7 +41,8 @@ test("parseTrails keeps the fields the panel needs", () => {
   assert.deepEqual(plain(parsed.trails[1]), {
     slug: "erwin-park", name: "Erwin Park", url: "https://dfwmtbtrailhub.com/trails/erwin-park", city: "Plano",
     shown: "closed", reported: "closed", reportedAt: Date.parse("2026-11-12T14:00:00.000Z"), unconfirmed: false,
-    condition: "Closed", reopen: "Sat, Nov 15 morning", lat: 33.25, lon: -96.67,
+    condition: "Closed", conditionCode: "closed", trailFeel: "", easiest: "", hardest: "", org: "",
+    reopen: "Sat, Nov 15 morning", lat: 33.25, lon: -96.67,
   })
   assert.equal(parsed.trails[2].shown, "caution")
   assert.equal(parsed.trails[2].reported, "closed")
@@ -202,4 +203,53 @@ test("settings rows cycle through their choices both ways", () => {
 
 test("file URLs encode every path segment", () => {
   assert.equal(M.fileUrl("/home/q#1%?/x"), "file:///home/q%231%25%3F/x")
+})
+
+test("tiles: the maintainer, difficulty and condition code come through", () => {
+  const raw = feed([{ ...arbor, organization: { name: "DORBA", fullName: "Dallas Off-Road Bicycle Association" },
+    difficulty: { rating: "Mixed", easiest: "Beginner", hardest: "Advanced" },
+    condition: { code: "epic", label: "Hero Dirt", trailFeel: "Fair until 10 AM, then Good" } },
+    { ...northshore, organization: "x".repeat(5000), difficulty: { rating: "Intermediate", easiest: null, hardest: null }, condition: { code: "lava" } },
+    { ...erwin, difficulty: { rating: "<b>Hard</b>" } }])
+  const [a, n, e] = M.parseTrails(raw).trails
+  assert.equal(a.org, "DORBA")
+  assert.equal(a.conditionCode, "epic")
+  assert.equal(a.trailFeel, "Fair until 10 AM, then Good")
+  assert.equal(M.difficultyLabel(a), "Beginner–Advanced")
+  assert.equal(M.levelGlyph(a.easiest) + M.levelGlyph(a.hardest), "●◆")
+  assert.equal(n.org, "", "an organization that isn't an object is ignored")
+  assert.equal(n.conditionCode, "unknown")
+  assert.equal(M.difficultyLabel(n), "Intermediate")
+  assert.equal(M.difficultyLabel(e), "", "only the site's four levels")
+})
+
+test("parseDetail: today's hours, capped and checked", () => {
+  const detail = M.parseDetail(JSON.stringify({ trail: { slug: "cameron-park", condition: { trailFeel: "Good until 5 PM, then Poor" },
+    hourlyToday: [{ hour: 6, condition: "good", forecast: false }, { hour: 17, condition: "poor", forecast: true },
+      { hour: 25, condition: "good" }, { hour: 7.5, condition: "good" }, { hour: "8", condition: "lava", forecast: "yes" }, null] } }))
+  assert.deepEqual(plain(detail), { slug: "cameron-park", trailFeel: "Good until 5 PM, then Poor", hourly: [
+    { hour: 6, condition: "good", forecast: false }, { hour: 17, condition: "poor", forecast: true },
+    { hour: 8, condition: "unknown", forecast: false }] })
+  assert.equal(M.parseDetail(JSON.stringify({ slug: "x", hourlyToday: Array.from({ length: 100 }, () => ({ hour: 6, condition: "good" })) })).hourly.length, 24)
+  assert.equal(M.parseDetail('{"trail":{"slug":"../x"}}'), null)
+  assert.equal(M.parseDetail("nope"), null)
+  assert.equal(M.hourLabel(6) + M.hourLabel(12) + M.hourLabel(17) + M.hourLabel(0), "6a12p5p12a")
+})
+
+test("the site's colors, dark for tiles and light for light themes", () => {
+  assert.equal(M.tone("epic", false), "#a855f7")
+  assert.equal(M.tone("good", false), "#22ee88")
+  assert.equal(M.tone("poor", true), "#e11d48")
+  assert.equal(M.tone("lava", false), "#9aa3b5")
+  assert.equal(M.statusTone("open", false), "#22ee88")
+  assert.equal(M.statusTone("caution", false), "#ffbb33")
+  assert.equal(M.statusTone("closed", true), "#e11d48")
+})
+
+test("report age reads like the site's tiles", () => {
+  assert.equal(M.reportAge(now - 30000, now), "reported just now")
+  assert.equal(M.reportAge(now - 40 * 60000, now), "report 40m ago")
+  assert.equal(M.reportAge(now - 5 * 3600000, now), "report 5h ago")
+  assert.equal(M.reportAge(now - 27 * 86400000, now), "report 27d ago")
+  assert.equal(M.reportAge(null, now), "report date unknown")
 })

@@ -95,8 +95,10 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // The site's colors; its light set on a light Omarchy theme.
+  readonly property bool lightTheme: Commons.Color.background.hslLightness > 0.5
   function statusColor(s) {
-    return s === "closed" ? Commons.Color.urgent : s === "caution" ? Commons.Color.accent : root.foreground
+    return Model.statusTone(s, lightTheme)
   }
 
   function statusGlyph(s) {
@@ -236,6 +238,47 @@ Panel {
     onLoaded: root.detectedLocation = Model.parseLocation(text())
   }
 
+  // ---- Favorites' detail ------------------------------------------------------
+
+  // Each favorite's /api/v1/trails/<slug> (about 9 KB) for its tile's hourly
+  // dirt, through fetch.sh like the list, one at a time, into detail/. The
+  // slug is the site's own (Model.slug), so it is safe as a file name. Each
+  // tile watches its own file.
+  readonly property string detailDir: cacheDir + "/detail"
+  property var detailQueue: []
+
+  function fetchDetails() {
+    var queue = detailQueue.slice()
+    for (var i = 0; i < favorites.length; i++)
+      if (queue.indexOf(favorites[i]) < 0) queue.push(favorites[i])
+    detailQueue = queue
+    nextDetail()
+  }
+
+  function nextDetail() {
+    if (detailProc.running || detailQueue.length === 0) return
+    var id = detailQueue[0]
+    detailProc.command = ["bash", fetchScript, detailDir, id + ".json",
+      "https://dfwmtbtrailhub.com/api/v1/trails/" + id, String(maxAgeMinutes), "200000"]
+    detailProc.running = true
+  }
+
+  Process {
+    id: detailProc
+    onExited: {
+      root.detailQueue = root.detailQueue.slice(1)
+      if (root.detailQueue.length > 0) root.nextDetail()
+      else detailPrune.running = true
+    }
+  }
+
+  // Details of trails no longer a favorite: removed after 30 days unused.
+  Process {
+    id: detailPrune
+    command: ["find", root.detailDir, "-type", "f", "-mtime", "+30", "-delete"]
+  }
+
+
   // ---- Alerts ---------------------------------------------------------------
 
   // notify.sh records each change it announces, under a lock, so one status
@@ -261,7 +304,10 @@ Panel {
 
   onChangesChanged: checkAlerts()
   onAlertsChanged: checkAlerts()
-  onFavoritesChanged: checkAlerts()
+  onFavoritesChanged: {
+    checkAlerts()
+    fetchDetails()
+  }
 
   // Every 15 minutes: the fetch script only downloads when the cached copy
   // is stale.
@@ -271,6 +317,7 @@ Panel {
     repeat: true
     onTriggered: {
       root.refresh(false)
+      root.fetchDetails()
       weatherFile.reload()
       root.detectLocation()
     }
@@ -284,7 +331,11 @@ Panel {
     onTriggered: root.now = Date.now()
   }
 
-  Component.onCompleted: refresh(false)
+  Component.onCompleted: {
+    refresh(false)
+    fetchDetails()
+    detailPrune.running = true
+  }
 
   // ---- Bar ------------------------------------------------------------------
 
@@ -295,6 +346,7 @@ Panel {
     now = Date.now()
     weatherFile.reload()
     refresh(false)
+    fetchDetails()
     cursorActive = false
     rowIndex = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -434,10 +486,10 @@ Panel {
           Column {
             visible: root.favCount > 0
             width: parent.width
-            spacing: Style.space(2)
+            spacing: Style.space(10)
             Repeater {
               model: root.favoriteTrails
-              TrailRow {
+              TrailTile {
                 required property var modelData
                 required property int index
                 width: parent.width
@@ -603,6 +655,273 @@ Panel {
     starLit: !!trail && trail.favorite
     onActivated: function(direction) { root.activateRow(rowIndex, direction) }
     onStarClicked: if (trail) root.toggleFavorite(trail.slug)
+  }
+
+  // A favorite, drawn like the trail tiles on dfwmtbtrailhub.com: its sign
+  // plate with the status, the dirt, the difficulty, today's trail feel hour
+  // by hour, who maintains it, when it was reported and how far away it is.
+  // Click it for the trail's page there; right-click (or f) to unstar it.
+  component TrailTile: Item {
+    id: tile
+    property int rowIndex: 0
+    property var trail: null
+    property var detail: null
+    readonly property bool hasCursor: root.cursorActive && root.rowIndex === rowIndex
+    readonly property color statusTone: trail ? Model.statusTone(trail.shown, false) : "white"
+    readonly property color dirtTone: trail ? Model.tone(trail.conditionCode, false) : "white"
+    readonly property string feel: detail && detail.trailFeel ? detail.trailFeel : (trail ? trail.trailFeel : "")
+    // The site's card: its dark green, its brown sign.
+    readonly property color cardBg: "#15231c"
+    readonly property color cardLine: hasCursor ? "#22ee88" : "#24392d"
+    readonly property color plate: "#4a3222"
+    readonly property color plateText: "#f3e6d3"
+    readonly property color textColor: "#e4ece6"
+    readonly property color subColor: "#93a69a"
+
+    implicitHeight: card.implicitHeight
+
+    FileView {
+      path: tile.trail ? root.detailDir + "/" + tile.trail.slug + ".json" : ""
+      watchChanges: true
+      printErrors: false
+      onFileChanged: reload()
+      onLoaded: {
+        var d = Model.parseDetail(text())
+        tile.detail = d && tile.trail && d.slug === tile.trail.slug ? d : null
+      }
+    }
+
+    Rectangle {
+      id: card
+      width: parent.width
+      implicitHeight: plateBox.height + body.implicitHeight
+      color: tile.cardBg
+      border.color: tile.cardLine
+      border.width: tile.hasCursor ? 2 : 1
+      radius: Style.space(5)
+      clip: true
+
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onEntered: { root.cursorActive = true; root.rowIndex = tile.rowIndex }
+        onClicked: function(mouse) { root.activateRow(tile.rowIndex, mouse.button === Qt.RightButton ? -1 : 1) }
+      }
+
+      // The trailhead sign: bolts, a star, the name, the status.
+      Rectangle {
+        id: plateBox
+        width: parent.width
+        height: Style.space(34)
+        color: tile.plate
+        radius: card.radius
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: card.radius; color: tile.plate }
+        Rectangle { x: Style.space(9); anchors.verticalCenter: parent.verticalCenter; width: Style.space(5); height: width; radius: width / 2; color: "#c9b08f" }
+        Rectangle { anchors.right: parent.right; anchors.rightMargin: Style.space(9); anchors.verticalCenter: parent.verticalCenter; width: Style.space(5); height: width; radius: width / 2; color: "#c9b08f" }
+
+        RowLayout {
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.leftMargin: Style.space(22)
+          anchors.rightMargin: Style.space(22)
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "\u{f04ce}"
+            color: tile.plateText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: tile.trail ? tile.trail.name.toUpperCase() : ""
+            color: tile.plateText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+            font.letterSpacing: 1
+            elide: Text.ElideRight
+          }
+          Rectangle {
+            implicitWidth: pill.implicitWidth + Style.space(14)
+            implicitHeight: pill.implicitHeight + Style.space(6)
+            radius: height / 2
+            color: Qt.rgba(tile.statusTone.r, tile.statusTone.g, tile.statusTone.b, 0.18)
+            border.color: tile.statusTone
+            Text {
+              id: pill
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "\u25cf " + (tile.trail ? Model.statusWord(tile.trail.shown).toUpperCase() : "") + (tile.trail && tile.trail.unconfirmed ? "?" : "")
+              color: tile.statusTone
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+          }
+        }
+      }
+
+      Column {
+        id: body
+        anchors.top: plateBox.bottom
+        x: Style.space(12)
+        width: parent.width - Style.space(24)
+        topPadding: Style.space(10)
+        bottomPadding: Style.space(8)
+        spacing: Style.space(8)
+
+        // The dirt, in its color, and the difficulty with the site's symbols.
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+          Rectangle {
+            visible: !!tile.trail && tile.trail.condition !== ""
+            implicitWidth: chip.implicitWidth + Style.space(14)
+            implicitHeight: chip.implicitHeight + Style.space(6)
+            radius: height / 2
+            color: Qt.rgba(tile.dirtTone.r, tile.dirtTone.g, tile.dirtTone.b, 0.16)
+            Text {
+              id: chip
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: tile.trail ? tile.trail.condition : ""
+              color: tile.dirtTone
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+          Row {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(5)
+            visible: !!tile.trail && tile.trail.easiest !== ""
+            Text {
+              textFormat: Text.PlainText
+              text: tile.trail ? Model.levelGlyph(tile.trail.easiest) : ""
+              color: tile.trail && tile.trail.easiest === "Beginner" ? "#22ee88" : tile.trail && tile.trail.easiest === "Intermediate" ? "#3b82f6" : tile.textColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: tile.trail ? Model.difficultyLabel(tile.trail) : ""
+              color: tile.textColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              visible: !!tile.trail && tile.trail.hardest !== tile.trail.easiest && tile.trail.hardest !== ""
+              textFormat: Text.PlainText
+              text: tile.trail ? Model.levelGlyph(tile.trail.hardest) : ""
+              color: tile.trail && tile.trail.hardest === "Intermediate" ? "#3b82f6" : tile.textColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // Today's trail feel: each hour's dirt in its color, forecast faded.
+        Column {
+          visible: !!tile.detail && tile.detail.hourly.length > 0
+          width: parent.width
+          spacing: Style.space(4)
+          RowLayout {
+            width: parent.width
+            Text {
+              textFormat: Text.PlainText
+              text: "TODAY'S TRAIL FEEL"
+              color: tile.subColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+            }
+            Item { Layout.fillWidth: true }
+            Text {
+              textFormat: Text.PlainText
+              text: "faded = forecast"
+              color: tile.subColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+          Row {
+            id: hours
+            spacing: Style.space(2)
+            readonly property var list: tile.detail ? tile.detail.hourly : []
+            readonly property real cell: list.length ? (body.width - spacing * (list.length - 1)) / list.length : 0
+            Repeater {
+              model: hours.list
+              Rectangle {
+                required property var modelData
+                width: hours.cell
+                height: Style.space(9)
+                radius: Style.space(2)
+                color: Model.tone(modelData.condition, false)
+                opacity: modelData.forecast ? 0.42 : 1
+              }
+            }
+          }
+          Item {
+            width: parent.width
+            height: Math.ceil(Style.font.caption * 1.4)
+            Repeater {
+              model: hours.list
+              Text {
+                required property var modelData
+                required property int index
+                visible: modelData.hour % 3 === 0 || index === hours.list.length - 1
+                x: (hours.cell + hours.spacing) * index + hours.cell / 2 - implicitWidth / 2
+                textFormat: Text.PlainText
+                text: Model.hourLabel(modelData.hour)
+                color: tile.subColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+
+        Text {
+          visible: tile.feel !== "" && tile.feel !== "Good all day"
+          width: parent.width
+          textFormat: Text.PlainText
+          text: tile.trail && tile.trail.shown === "closed" && tile.trail.reopen ? tile.feel + " · reopens " + tile.trail.reopen : tile.feel
+          color: tile.textColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Rectangle { width: parent.width; height: 1; color: "#24392d" }
+
+        // Who maintains it, when it was reported, how far away it is.
+        RowLayout {
+          width: parent.width
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: tile.trail ? (tile.trail.org ? "A " + tile.trail.org + " trail · " : "") + Model.reportAge(tile.trail.reportedAt, root.now) : ""
+            color: tile.subColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+          Text {
+            visible: !!tile.trail && tile.trail.distance !== null
+            textFormat: Text.PlainText
+            text: tile.trail ? Model.formatDistance(tile.trail.distance, root.unit) + " away" : ""
+            color: "#22ee88"
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+    }
   }
 
   component MeetRow: CursorSurface {
