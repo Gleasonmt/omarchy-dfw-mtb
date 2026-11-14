@@ -218,7 +218,11 @@ Panel {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.changes = Model.parseChanges(text())
+    onLoaded: {
+      root.changes = Model.parseChanges(text())
+      root.changesRead = true
+      root.checkAlerts()
+    }
   }
 
   FileView {
@@ -277,8 +281,10 @@ Panel {
 
   Process {
     id: detailProc
-    onExited: {
+    onExited: function(code) {
       root.detailRevision++
+      // Another bar holds this download: read again once it's likely done
+      if (code === 2) detailRetry.restart()
       root.detailQueue = root.detailQueue.slice(1)
       if (root.detailQueue.length > 0) root.nextDetail()
       else root.pruneDetails()
@@ -300,24 +306,23 @@ Panel {
     id: detailPrune
   }
 
+  Timer {
+    id: detailRetry
+    interval: 20 * 1000
+    onTriggered: root.detailRevision++
+  }
+
 
   // ---- Alerts ---------------------------------------------------------------
 
-  // Only changes that appear while the widget runs are announced: the ones
-  // listed when it first reads the list, and when alerts or favorites change,
-  // are `seen` (so installing it, restarting the shell or starring a trail
-  // never replays old changes). notify.sh also records each change it
-  // announces, under a lock, so one change gives one notification however
-  // many monitors have a bar. At most Model.MAX_ALERTS each update, then one
-  // summary for the rest.
+  // The alerts' logic is Model.alertStep and Model.alertsReset (tested):
+  // the first read of the change list only records it, later reads announce
+  // what's new (at most Model.MAX_ALERTS, then one summary), and starring a
+  // trail or switching alerts on counts everything listed as seen. notify.sh
+  // also records each change it announces, under a lock, so one change gives
+  // one notification however many monitors have a bar.
   property var seen: null
-
-  function markSeen() {
-    var next = Model.seenSet(changes)
-    // Changes the feed no longer lists needn't be remembered
-    if (seen && Object.keys(seen).length < 1000) for (var id in seen) next[id] = true
-    seen = next
-  }
+  property bool changesRead: false
 
   function notify(key, glyph, text, url) {
     // The click opens the page on the Trail Hub; the link is one argument,
@@ -328,25 +333,22 @@ Panel {
   }
 
   function checkAlerts() {
-    if (seen === null) {
-      if (changes.length) markSeen()
-      return
+    if (!changesRead) return
+    var now = Date.now()
+    var step = Model.alertStep(seen, changes, alerts, favorites, now)
+    seen = step.seen
+    for (var i = 0; i < step.each.length; i++) {
+      var c = step.each[i]
+      notify(Qt.md5("change|" + c.id), root.statusGlyph(c.status), Model.alertText(c, now), c.url)
     }
-    var batch = Model.alertBatch(Model.alertsDue(changes, alerts, favorites, seen, Date.now()))
-    for (var i = 0; i < batch.each.length; i++) {
-      var c = batch.each[i]
-      notify(Qt.md5("change|" + c.id), root.statusGlyph(c.status), Model.alertText(c), c.url)
-    }
-    if (batch.more > 0)
+    if (step.more > 0)
       notify(Qt.md5("summary|" + changes.map(function(c) { return c.id }).join(",")), "\u{f00a3}",
-        Model.summaryText(batch.more), "https://dfwmtbtrailhub.com/")
-    markSeen()
+        Model.summaryText(step.more), "https://dfwmtbtrailhub.com/")
   }
 
-  onChangesChanged: checkAlerts()
-  onAlertsChanged: if (seen !== null) markSeen()
+  onAlertsChanged: seen = Model.alertsReset(seen, changes)
   onFavoritesChanged: {
-    if (seen !== null) markSeen()
+    seen = Model.alertsReset(seen, changes)
     fetchDetails()
   }
 

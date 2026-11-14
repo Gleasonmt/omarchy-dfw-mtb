@@ -56,9 +56,9 @@ reported. Below them are the latest status changes and a link to the site.
 
 **Alerts**: when one of your favorites opens, closes or goes to caution, you get one notification
 (one, however many monitors you have); click it for the trail's page. Under Filter options you can
-switch alerts to any trail, or off. Only changes that appear while the widget is running are
-announced: installing it, restarting the shell, starring a trail or switching alerts on never
-replays earlier ones. At most three come at once; the rest are one "N more trail changes"
+switch alerts to any trail, or off. Installing it, starring a trail or switching alerts on never
+replays earlier changes; after a restart you hear about changes made since the shell last
+checked, with their day ("reported yesterday 12:55 PM"). At most three come at once; the rest are one "N more trail changes"
 notification.
 
 ## How it works

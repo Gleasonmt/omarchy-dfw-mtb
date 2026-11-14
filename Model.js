@@ -417,7 +417,7 @@ function alertsDue(changes, mode, favorites, seen, now) {
   var out = []
   for (var i = 0; i < changes.length; i++) {
     var c = changes[i]
-    if (seen && seen[c.id]) continue
+    if (seen && seen[c.id] === true) continue
     if (c.at > now + FUTURE_SLACK_MS) continue
     if (mode === "favorites" && favs.indexOf(c.slug) < 0) continue
     out.push(c)
@@ -426,11 +426,41 @@ function alertsDue(changes, mode, favorites, seen, now) {
   return out
 }
 
-// The changes listed now, as a `seen` set for alertsDue.
+// The changes listed now, as a `seen` set for alertsDue. The ids come from
+// the feed, so the set has no prototype: an id like "__proto__" made a plain
+// {} throw (alerts stopped on every bar), and "constructor" or "toString"
+// read as already seen.
 function seenSet(changes) {
-  var seen = {}
+  var seen = Object.create(null)
   for (var i = 0; i < changes.length; i++) seen[changes[i].id] = true
   return seen
+}
+
+// `seen` with the changes listed now added. Ids the feed no longer lists are
+// forgotten once it holds 1000, so it can't grow without end.
+function mergeSeen(seen, changes) {
+  var next = seenSet(changes)
+  if (seen && Object.keys(seen).length < 1000) for (var id in seen) next[id] = true
+  return next
+}
+
+// One alerts update, as the panel runs it each time the change list is read:
+// { seen, each, more }. The first read (`seen` null) only records what's
+// listed, so installing the widget never announces old changes; a read of an
+// empty list counts as one. After that, the changes not seen yet are due:
+// at most MAX_ALERTS one by one (`each`), and `more` in one summary. Changes
+// posted while the shell was off are in a later download, so they're
+// announced then, with their date (alertText).
+function alertStep(seen, changes, mode, favorites, now) {
+  if (seen === null) return { seen: seenSet(changes), each: [], more: 0 }
+  var batch = alertBatch(alertsDue(changes, mode, favorites, seen, now))
+  return { seen: mergeSeen(seen, changes), each: batch.each, more: batch.more }
+}
+
+// When favorites or the alerts setting change, everything listed now counts
+// as seen: starring a trail or switching alerts on never replays its past.
+function alertsReset(seen, changes) {
+  return seen === null ? null : mergeSeen(seen, changes)
 }
 
 // alertsDue's list split into the ones notified one by one and how many more
@@ -460,12 +490,24 @@ function clock(ms) {
   return (h % 12 === 0 ? 12 : h % 12) + (m ? ":" + (m < 10 ? "0" : "") + m : "") + (h < 12 ? " AM" : " PM")
 }
 
+// When a change was reported, for its notification: "12:55 PM" today,
+// "yesterday 12:55 PM", else "Nov 12, 12:55 PM", so one announced after the
+// laptop was off doesn't read as today's.
+function reportedWhen(ms, now) {
+  var day = function(t) { var d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() }
+  var days = Math.round((day(now) - day(ms)) / 86400000)
+  if (days === 0) return clock(ms)
+  if (days === 1) return "yesterday " + clock(ms)
+  var d = new Date(ms)
+  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + clock(ms)
+}
+
 // Headline and body for a status change. Public trail data only.
-function alertText(change) {
+function alertText(change, now) {
   var word = change.status === "open" ? "open" : change.status === "closed" ? "closed" : "on caution"
   return {
     headline: plainText(change.name) + " is " + word,
-    body: plainText((change.previous ? "Was " + change.previous + " · " : "") + "reported " + clock(change.at)) + "\nDFW MTB Trail Hub"
+    body: plainText((change.previous ? "Was " + change.previous + " · " : "") + "reported " + reportedWhen(change.at, now)) + "\nDFW MTB Trail Hub"
   }
 }
 

@@ -52,7 +52,7 @@ test("sends once, passing the arguments through unchanged", () => {
   assert.deepEqual(s.sent(), ["Northshore Trail is closed\nBody\n--exec\nomarchy-launch-browser\nhttps://dfwmtbtrailhub.com/trails/northshore-trail\n"])
 })
 
-test("different reminders are each sent", () => {
+test("different changes are each notified", () => {
   const s = sandbox()
   s.run(KEY)
   s.run("f".repeat(32))

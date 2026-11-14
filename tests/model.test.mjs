@@ -195,12 +195,12 @@ test("text cuts never split an emoji", () => {
 
 test("alert text: public trail data, and no markup can survive", () => {
   const c = { ...change("1", "x", "2026-11-14T19:30:00Z"), name: '<b>Tom & Jerry</b> &lt;i&gt;' }
-  const t = M.alertText(c)
+  const t = M.alertText(c, now)
   assert.equal(t.headline, "‹b›Tom ＆ Jerry‹/b› ＆lt;i＆gt; is closed")
   assert.equal(t.body, "Was open · reported 1:30 PM\nDFW MTB Trail Hub")
   assert.doesNotMatch(t.headline + t.body, /[<>&]/)
-  assert.equal(M.alertText({ ...c, name: "A", status: "caution", previous: "" }).headline, "A is on caution")
-  assert.equal(M.alertText({ ...c, name: "A", status: "open", previous: "" }).body, "reported 1:30 PM\nDFW MTB Trail Hub")
+  assert.equal(M.alertText({ ...c, name: "A", status: "caution", previous: "" }, now).headline, "A is on caution")
+  assert.equal(M.alertText({ ...c, name: "A", status: "open", previous: "" }, now).body, "reported 1:30 PM\nDFW MTB Trail Hub")
 })
 
 // Measured, not modelled: run alert text through Omarchy's own notification
@@ -277,4 +277,43 @@ test("report age reads like the site's tiles", () => {
   assert.equal(M.reportAge(now - 5 * 3600000, now), "report 5h ago")
   assert.equal(M.reportAge(now - 27 * 86400000, now), "report 27d ago")
   assert.equal(M.reportAge(null, now), "report date unknown")
+})
+
+test("the alerts' lifecycle: the first read only records, new changes are announced once, starring replays nothing", () => {
+  const a = change("a", "arbor-hills", "2026-11-14T13:00:00Z")
+  const b = change("b", "erwin-park", "2026-11-14T14:00:00Z")
+  const c = change("c", "arbor-hills", "2026-11-14T14:30:00Z")
+  // First read (install, shell start): nothing announced
+  let step = M.alertStep(null, [a, b], "all", [], now)
+  assert.deepEqual([step.each.length, step.more], [0, 0])
+  // A later read with a new change: announced, then never again
+  step = M.alertStep(step.seen, [c, a, b], "all", [], now)
+  assert.deepEqual(plain(step.each.map(x => x.id)), ["c"])
+  step = M.alertStep(step.seen, [c, a, b], "all", [], now)
+  assert.equal(step.each.length, 0)
+  // An empty first read is a read: the next list's changes are new
+  const empty = M.alertStep(null, [], "all", [], now)
+  assert.deepEqual(plain(M.alertStep(empty.seen, [a], "all", [], now).each.map(x => x.id)), ["a"])
+  // Starring a trail (or switching alerts on) counts everything listed as seen
+  const before = M.alertStep(null, [], "favorites", [], now).seen
+  const starred = M.alertsReset(before, [a, c])
+  assert.deepEqual(plain(M.alertStep(starred, [a, c], "favorites", ["arbor-hills"], now).each), [])
+  assert.equal(M.alertsReset(null, [a]), null, "before the first read there's nothing to reset")
+})
+
+test("change ids from the feed can't break or hide alerts (__proto__, constructor, toString)", () => {
+  const hostile = ["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"].map((id, i) =>
+    change(id, "arbor-hills", new Date(now - i * 60000).toISOString()))
+  const first = M.alertStep(null, [], "all", [], now)
+  const step = M.alertStep(first.seen, hostile, "all", [], now)
+  assert.equal(step.each.length + step.more, 5, "every one is announced, none read as seen")
+  assert.equal(M.alertStep(step.seen, hostile, "all", [], now).each.length, 0, "and each only once")
+  assert.equal(Object.getPrototypeOf(M.seenSet(hostile)), null)
+})
+
+test("an alert says the day when the change wasn't today", () => {
+  const at = (iso) => M.alertText(change("1", "x", iso), now).body.split("\n")[0]
+  assert.equal(at("2026-11-14T13:55:00Z"), "Was open · reported 7:55 AM")
+  assert.equal(at("2026-11-13T18:55:00Z"), "Was open · reported yesterday 12:55 PM")
+  assert.equal(at("2026-11-11T18:55:00Z"), "Was open · reported Nov 11, 12:55 PM")
 })
