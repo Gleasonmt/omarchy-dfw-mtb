@@ -25,12 +25,17 @@ umask 077
 # it: a real folder (not a symlink), owned by this user, writable by no one
 # else, and every folder above it owned by this user or root and writable by
 # no one else unless sticky (like /tmp). Otherwise nothing is touched.
-private_dir() {
+# The script moves into the folder first and checks the folder it is in, then
+# uses only names relative to it, so swapping a folder on the given path for a
+# symlink after the check can't send a write anywhere else.
+enter_private_dir() {
   local d mode
   [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-  d=$(cd -P -- "$1" && pwd -P) || return 1
-  mode=$(stat -c %a -- "$d") || return 1
+  cd -P -- "$1" || return 1
+  [ -O . ] || return 1
+  mode=$(stat -c %a .) || return 1
   (( 8#$mode & 8#022 )) && return 1
+  d=$(pwd -P) || return 1
   while [ "$d" != / ]; do
     d=$(dirname -- "$d")
     [ -O "$d" ] || [ "$(stat -c %u -- "$d")" = 0 ] || return 1
@@ -40,24 +45,24 @@ private_dir() {
 }
 
 dir=$1 name=$2 url=$3 age=$4 max_bytes=$5
-file=$dir/$name
+file=./$name
 
 case $url in https://*) ;; *) exit 1 ;; esac
 case $age$max_bytes in *[!0-9]*) exit 1 ;; esac
 
 mkdir -p "$dir" || exit 1
-private_dir "$dir" || exit 1
+enter_private_dir "$dir" || exit 1
 # <> opens without truncating, so even a planted lock would never be emptied.
-exec 9<>"$dir/.$name.lock" || exit 1
+exec 9<>"./.$name.lock" || exit 1
 flock -n 9 || exit 2
 
-find "$dir" -maxdepth 1 -name '.dl.*' -mmin +5 -delete 2>/dev/null
+find . -maxdepth 1 -name '.dl.*' -mmin +5 -delete 2>/dev/null
 
 if [ "$age" -gt 0 ] && [ -n "$(find "$file" -mmin -"$age" 2>/dev/null)" ]; then
   exit 0
 fi
 
-tmp=$(mktemp "$dir/.dl.XXXXXX") || exit 1
+tmp=$(mktemp ./.dl.XXXXXX) || exit 1
 if curl -fsSL --proto '=https' --proto-redir '=https' --max-time 15 --max-filesize "$max_bytes" "$url" -o "$tmp"; then
   mv -f "$tmp" "$file"
 else
