@@ -25,6 +25,7 @@ if [ -n "\${STUB_KILL:-}" ]; then kill -9 0; fi
   // two runs are in there at once (mkdir is atomic), which the lock forbids,
   // and $FIND_SLEEP keeps each one there long enough to collide without it.
   writeFileSync(join(bin, "find"), `#!/usr/bin/env bash
+[ -n "\${STUB_SWAP:-}" ] && bash -c "$STUB_SWAP"
 if [ -n "\${FIND_SLEEP:-}" ]; then
   mkdir "$STUB_INSIDE" 2>/dev/null || echo overlap >> "$STUB_OVERLAP"
   sleep "$FIND_SLEEP"
@@ -42,7 +43,7 @@ exec ${spawnSync("bash", ["-c", "command -v find"], { encoding: "utf8" }).stdout
   const run = (key, extra = {}) => spawnSync("bash", args(key), { env: env(extra), encoding: "utf8" })
   const start = (key, extra = {}) => new Promise(done => spawn("bash", args(key), { env: env(extra) }).on("exit", done))
   const sent = () => existsSync(log) ? readFileSync(log, "utf8").split("--\n").filter(Boolean) : []
-  return { dir, run, start, sent, overlap }
+  return { root, dir, env, run, start, sent, overlap }
 }
 
 test("sends once, passing the arguments through unchanged", () => {
@@ -130,4 +131,24 @@ test("a record that is a planted symlink is never written through", () => {
   assert.equal(s.run().status, 1)
   assert.equal(existsSync(victim), false)
   assert.deepEqual(s.sent(), [])
+})
+
+// The state path goes through a symlink another account could later repoint.
+// It is swapped after the check, inside the lock: the record still lands in
+// the folder that was checked, and a record already in the other folder
+// doesn't stop the notification.
+test("a folder on the path swapped for a symlink after the check changes nothing", () => {
+  const s = sandbox()
+  const real = join(s.root, "real"), alias = join(s.root, "alias"), victim = join(s.root, "victim")
+  mkdirSync(join(real, "reminded"), { recursive: true, mode: 0o700 })
+  mkdirSync(join(victim, "reminded"), { recursive: true, mode: 0o700 })
+  writeFileSync(join(victim, "reminded", KEY), "")
+  symlinkSync(real, alias)
+  const r = spawnSync("bash", [script, join(alias, "reminded"), KEY, "Title", "Body"], {
+    env: s.env({ STUB_SWAP: `ln -sfn '${victim}' '${alias}'` }), encoding: "utf8",
+  })
+  assert.equal(r.status, 0)
+  assert.ok(existsSync(join(real, "reminded", KEY)), "recorded in the checked folder")
+  assert.deepEqual(readdirSync(join(victim, "reminded")), [KEY], "nothing written in the other folder")
+  assert.equal(s.sent().length, 1)
 })

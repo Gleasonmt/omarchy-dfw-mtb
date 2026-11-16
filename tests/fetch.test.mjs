@@ -16,6 +16,7 @@ function sandbox() {
   mkdirSync(bin)
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$STUB_LOG"
+[ -n "\${STUB_SWAP:-}" ] && bash -c "$STUB_SWAP"
 [ -n "\${STUB_SLEEP:-}" ] && sleep "$STUB_SLEEP"
 [ "\${STUB_EXIT:-0}" != 0 ] && { printf partial > "\${@: -1}"; exit "$STUB_EXIT"; }
 out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
@@ -139,4 +140,25 @@ test("a sticky shared folder above is fine, and a lock that is a symlink is neve
   assert.equal(s.run().status, 0)
   assert.equal(readFileSync(victim, "utf8"), "precious")
   chmodSync(s.root, 0o700)
+})
+
+// The cache path goes through a symlink another account could later repoint
+// (say XDG_CACHE_HOME is one). It is swapped after the check, mid-download:
+// the file still lands in the folder that was checked.
+test("a folder on the path swapped for a symlink after the check changes nothing", () => {
+  const s = sandbox()
+  const real = join(s.root, "real"), alias = join(s.root, "alias"), victim = join(s.root, "victim")
+  mkdirSync(join(real, "cache"), { recursive: true, mode: 0o700 })
+  mkdirSync(join(victim, "cache"), { recursive: true, mode: 0o700 })
+  writeFileSync(join(victim, "cache", "trails.json"), "precious")
+  symlinkSync(real, alias)
+  const r = spawnSync("bash", [script, join(alias, "cache"), "trails.json", "https://example.org/trails.json", "0", "2000000"], {
+    env: { ...process.env, PATH: `${s.bin}:${process.env.PATH}`, STUB_LOG: s.log, STUB_BODY: "fresh",
+      STUB_SWAP: `ln -sfn '${victim}' '${alias}'` },
+    encoding: "utf8",
+  })
+  assert.equal(r.status, 0)
+  assert.equal(readFileSync(join(victim, "cache", "trails.json"), "utf8"), "precious")
+  assert.equal(readFileSync(join(real, "cache", "trails.json"), "utf8"), "fresh")
+  assert.deepEqual(readdirSync(join(victim, "cache")), ["trails.json"], "nothing else written there either")
 })

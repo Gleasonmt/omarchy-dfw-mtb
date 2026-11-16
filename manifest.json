@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "gleasonmt.dfw-mtb",
   "name": "DFW MTB Trail Hub",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "Gleasonmt",
   "license": "MIT",
   "description": "Dallas–Fort Worth mountain bike trail status in your bar: your favorite trails at a glance, every trail's conditions a click away, and a notification when one opens or closes. From DFW MTB Trail Hub, by the person who runs it.",
